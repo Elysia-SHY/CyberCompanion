@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberCompanion · 赛博伴侣 控制台</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-avatar">🐳</div>
+        <div class="brand-text">
+          <h1>CyberCompanion</h1>
+          <span class="badge-tag">v1.0.0 · 边缘智能</span>
+        </div>
+      </div>
+      <nav class="nav-links">
+        <button class="nav-btn active" data-tab="overview">
+          <span class="icon">📊</span> 仪表盘概览
+        </button>
+        <button class="nav-btn" data-tab="persona">
+          <span class="icon">🎭</span> 灵魂与人设
+        </button>
+        <button class="nav-btn" data-tab="config">
+          <span class="icon">⚙️</span> 系统与模型
+        </button>
+        <button class="nav-btn" data-tab="logs">
+          <span class="icon">📜</span> 实时运行日志
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="device-badge" id="sidebar-device">探测硬件中...</div>
+        <div class="status-indicator">
+          <span class="dot" id="qq-status-dot"></span>
+          <span id="qq-status-text">QQ 网关连接中</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Header -->
+      <header class="topbar">
+        <h2 id="page-title">仪表盘概览</h2>
+        <div class="topbar-actions">
+          <button class="btn btn-outline" id="btn-refresh" title="刷新状态">🔄 刷新</button>
+          <button class="btn btn-danger" id="btn-reboot" title="远程重启设备">⚡ 重启设备</button>
+        </div>
+      </header>
+
+      <!-- TAB 1: OVERVIEW -->
+      <section class="tab-pane active" id="tab-overview">
+        <!-- Hero Companion Card -->
+        <div class="card companion-card">
+          <div class="companion-avatar" id="hero-avatar">🐳</div>
+          <div class="companion-info">
+            <div class="companion-header">
+              <h3 id="hero-name">DEEPSEEK-CHAN</h3>
+              <span class="badge badge-accent" id="hero-title">经典蓝色大肥鱼</span>
+            </div>
+            <p id="hero-desc" class="companion-desc">容易过载宕机、爱吃白饭、嘴硬心软的傲娇二次元大肥鱼。</p>
+            <div class="companion-stats">
+              <span>💬 语境表情包：<strong id="hero-stickers-status">已就绪</strong></span>
+              <span>🔒 权限机制：<strong id="hero-auth-status">暗号认证 + 隔离</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Telemetry Grid -->
+        <div class="grid grid-3">
+          <div class="card stat-card">
+            <div class="stat-header">
+              <span class="stat-icon">💻</span>
+              <span class="stat-label">设备与架构</span>
+            </div>
+            <div class="stat-value" id="stat-device">--</div>
+            <div class="stat-sub" id="stat-os-arch">--</div>
+          </div>
+
+          <div class="card stat-card">
+            <div class="stat-header">
+              <span class="stat-icon">⏱️</span>
+              <span class="stat-label">运行时间</span>
+            </div>
+            <div class="stat-value" id="stat-uptime">--</div>
+            <div class="stat-sub" id="stat-hostname">--</div>
+          </div>
+
+          <div class="card stat-card">
+            <div class="stat-header">
+              <span class="stat-icon">📶</span>
+              <span class="stat-label">蜂窝 / 网络</span>
+            </div>
+            <div class="stat-value" id="stat-signal">--</div>
+            <div class="stat-sub" id="stat-network-type">--</div>
+          </div>
+        </div>
+
+        <!-- Hardware Details & Gauges -->
+        <div class="grid grid-2">
+          <div class="card">
+            <h3>🧠 资源占用</h3>
+            <div class="gauge-group">
+              <div class="gauge-label">
+                <span>内存 (RAM)</span>
+                <span id="mem-label">-- / --</span>
+              </div>
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="mem-fill" style="width: 0%"></div>
+              </div>
+            </div>
+            <div class="temperatures-list" id="temp-tags">
+              <!-- Temperature badges injected here -->
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>🌐 移动流量与网络统计</h3>
+            <div class="traffic-box">
+              <div class="traffic-item">
+                <span class="traffic-label">当天累计流量</span>
+                <span class="traffic-val" id="stat-traffic-today">--</span>
+              </div>
+              <div class="traffic-item">
+                <span class="traffic-label">信号质量 (RSRP)</span>
+                <span class="traffic-val" id="stat-rsrp-detail">--</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: PERSONA -->
+      <section class="tab-pane" id="tab-persona">
+        <div class="card">
+          <h3>🎭 选择内置灵魂预设</h3>
+          <p class="card-desc">点击即可毫秒级无缝更换伴侣人格灵魂，支持聊天中随时切换。</p>
+          <div class="preset-grid" id="preset-container">
+            <!-- Preset cards generated here -->
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>✍️ 完全自定义提示词 (System Prompt)</h3>
+          <p class="card-desc">编写你专属的角色设定、称谓与说话口癖，保存后即刻生效。</p>
+          <div class="form-group">
+            <label for="custom-bot-name">伴侣称呼 / 名字</label>
+            <input type="text" id="custom-bot-name" class="form-control" placeholder="例如：爱莉希雅 / 玲珑">
+          </div>
+          <div class="form-group">
+            <label for="custom-prompt-text">角色灵魂设定提示词</label>
+            <textarea id="custom-prompt-text" class="form-control" rows="8" placeholder="你是一个..."></textarea>
+          </div>
+          <button class="btn btn-primary" id="btn-save-custom-persona">🎨 应用自定义人设</button>
+        </div>
+      </section>
+
+      <!-- TAB 3: CONFIG -->
+      <section class="tab-pane" id="tab-config">
+        <div class="card">
+          <h3>🤖 QQ 官方机器人认证凭据</h3>
+          <p class="card-desc">前往 <a href="https://q.qq.com" target="_blank" class="link">QQ 开放平台</a> 获取 AppID 与 AppSecret。</p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="cfg-qq-appid">QQ AppID</label>
+              <input type="text" id="cfg-qq-appid" class="form-control" placeholder="190xxxxxxx">
+            </div>
+            <div class="form-group">
+              <label for="cfg-qq-secret">QQ AppSecret</label>
+              <input type="password" id="cfg-qq-secret" class="form-control" placeholder="••••••••••••••••">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🧠 大语言模型后端 (OpenAI 标准协议)</h3>
+          <p class="card-desc">兼容 DeepSeek 官方、One API、New API、Ollama、vLLM 或任意 OpenAI 兼容中转接口。</p>
+          <div class="form-group">
+            <label for="cfg-llm-url">API Completions Endpoint</label>
+            <input type="text" id="cfg-llm-url" class="form-control" placeholder="https://api.deepseek.com/v1/chat/completions">
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="cfg-llm-token">API Token / Key</label>
+              <input type="password" id="cfg-llm-token" class="form-control" placeholder="sk-xxxxxxxx">
+            </div>
+            <div class="form-group">
+              <label for="cfg-llm-model">模型名称 (Model)</label>
+              <input type="text" id="cfg-llm-model" class="form-control" placeholder="deepseek-chat">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>🛡️ 安全权限与功能开关</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="cfg-passcode">主人认主暗号 (Passcode)</label>
+              <input type="text" id="cfg-passcode" class="form-control" placeholder="例如：复活吧我的爱人！！！elyisa">
+            </div>
+            <div class="form-group">
+              <label for="cfg-web-port">Web 控制台端口</label>
+              <input type="number" id="cfg-web-port" class="form-control" placeholder="8088">
+            </div>
+          </div>
+          <div class="form-check">
+            <input type="checkbox" id="cfg-enable-stickers" checked>
+            <label for="cfg-enable-stickers">启用真实语境表情包池 (支持大肥鱼/爱莉希雅精选图集与多模态识图)</label>
+          </div>
+          <div class="btn-group-right">
+            <button class="btn btn-primary" id="btn-save-config">💾 保存全局配置</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 4: LOGS -->
+      <section class="tab-pane" id="tab-logs">
+        <div class="card log-card">
+          <div class="log-header">
+            <h3>📜 实时运行日志</h3>
+            <div>
+              <button class="btn btn-outline btn-sm" id="btn-clear-logs">清空显示</button>
+              <button class="btn btn-outline btn-sm" id="btn-pause-logs">暂停滚动</button>
+            </div>
+          </div>
+          <div class="terminal-view" id="terminal-view">
+            <!-- Terminal lines injected here -->
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast Notification -->
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

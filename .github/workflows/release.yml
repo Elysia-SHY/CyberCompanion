@@ -1,0 +1,94 @@
+name: Multi-Platform Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Multi-Arch Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # macOS Apple Silicon (M1/M2/M3/M4)
+          - goos: darwin
+            goarch: arm64
+            output_name: cybercompanion-darwin-arm64
+          # macOS Intel
+          - goos: darwin
+            goarch: amd64
+            output_name: cybercompanion-darwin-amd64
+          # Pocket WiFi U20 / Android / Raspberry Pi 4/5 (64-bit ARM)
+          - goos: linux
+            goarch: arm64
+            output_name: cybercompanion-linux-arm64
+          # Pocket WiFi Qualcomm 410/210 (32-bit ARMv7)
+          - goos: linux
+            goarch: arm
+            goarm: 7
+            output_name: cybercompanion-linux-armv7
+          # Generic Linux Server / Docker / Soft Router (x86_64)
+          - goos: linux
+            goarch: amd64
+            output_name: cybercompanion-linux-amd64
+          # Windows PC (64-bit)
+          - goos: windows
+            goarch: amd64
+            output_name: cybercompanion-windows-amd64.exe
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Compile CyberCompanion
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o build/${{ matrix.output_name }} ./cmd/cybercompanion
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: build/${{ matrix.output_name }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Package Binaries
+        run: |
+          mkdir -p dist
+          find release-artifacts -type f -exec mv {} dist/ \;
+          cd dist && sha256sum * > SHA256SUMS.txt && cd ..
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true

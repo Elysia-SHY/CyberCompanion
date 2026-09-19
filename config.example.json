@@ -1,0 +1,18 @@
+{
+  "qq_appid": "你的QQ机器人AppID",
+  "qq_secret": "你的QQ机器人AppSecret",
+  "oneapi_url": "https://api.deepseek.com/v1/chat/completions",
+  "oneapi_token": "你的大模型API_KEY",
+  "model": "deepseek-chat",
+  "bot_name": "DEEPSEEK-CHAN",
+  "system_prompt": "你是一个温柔贴心的二次元日常陪伴少女。",
+  "active_persona": "deepseek_chan",
+  "owners": [],
+  "owners_file": "owners.json",
+  "daily_file": "daily_traffic.json",
+  "passcode": "复活吧我的爱人！！！elyisa",
+  "web_port": 8088,
+  "sandbox": false,
+  "stickers_dir": "./stickers",
+  "enable_stickers": true
+}

@@ -1,0 +1,100 @@
+//go:build linux || android
+
+package hal
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+)
+
+type LinuxDriver struct{}
+
+func init() {
+	RegisterDriver(&LinuxDriver{})
+}
+
+func (d *LinuxDriver) Name() string {
+	return "Linux Standard / Raspberry Pi (" + runtime.GOARCH + ")"
+}
+
+func (d *LinuxDriver) Detect() bool {
+	return runtime.GOOS == "linux" || runtime.GOOS == "android"
+}
+
+func (d *LinuxDriver) GetInfo() DeviceInfo {
+	info := DeviceInfo{
+		DeviceType:    d.Name(),
+		Arch:          runtime.GOARCH,
+		OS:            runtime.GOOS,
+		Hostname:      getHostname(),
+		Uptime:        GetBaseUptime(),
+		NetworkType:   "Ethernet / Wi-Fi",
+		SignalRSRP:    "正常",
+		SignalBar:     4,
+		TrafficToday:  "无上限",
+		Temperatures:  []string{},
+		MemoryUsedMB:  0,
+		MemoryTotalMB: 0,
+	}
+
+	zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
+	for i, z := range zones {
+		if i > 2 {
+			break
+		}
+		if data, err := os.ReadFile(z); err == nil {
+			tStr := strings.TrimSpace(string(data))
+			if tVal, err := strconv.Atoi(tStr); err == nil {
+				if tVal > 1000 {
+					tVal /= 1000
+				}
+				info.Temperatures = append(info.Temperatures, fmt.Sprintf("Zone%d: %d°C", i, tVal))
+			}
+		}
+	}
+	if len(info.Temperatures) == 0 {
+		info.Temperatures = []string{"Core: 良好"}
+	}
+
+	if memData, err := os.ReadFile("/proc/meminfo"); err == nil {
+		lines := strings.Split(string(memData), "\n")
+		var totalKb, availKb int64
+		for _, line := range lines {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					totalKb, _ = strconv.ParseInt(fields[1], 10, 64)
+				}
+			} else if strings.HasPrefix(line, "MemAvailable:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					availKb, _ = strconv.ParseInt(fields[1], 10, 64)
+				}
+			}
+		}
+		if totalKb > 0 {
+			info.MemoryTotalMB = totalKb / 1024
+			info.MemoryUsedMB = (totalKb - availKb) / 1024
+		}
+	}
+
+	return info
+}
+
+func (d *LinuxDriver) ExecuteRootCmd(cmd string) (string, error) {
+	c := exec.Command("sh", "-c", cmd)
+	var out, stderr bytes.Buffer
+	c.Stdout = &out
+	c.Stderr = &stderr
+	err := c.Run()
+	if err != nil {
+		return strings.TrimSpace(stderr.String()), err
+	}
+	return strings.TrimSpace(out.String()), nil
+}
