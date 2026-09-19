@@ -91,12 +91,14 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      - name: Compile Native Go Core for Android (arm64 & armv7)
+      - name: Compile Native Go Core for Android (arm64, armv7 & x86_64)
         run: |
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           mkdir -p android/app/src/main/jniLibs/armeabi-v7a
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o android/app/src/main/jniLibs/arm64-v8a/libcybercompanion.so ./cmd/cybercompanion
+          mkdir -p android/app/src/main/jniLibs/x86_64
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -buildmode=pie -ldflags="-s -w" -o android/app/src/main/jniLibs/arm64-v8a/libcybercompanion.so ./cmd/cybercompanion
           CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -ldflags="-s -w" -o android/app/src/main/jniLibs/armeabi-v7a/libcybercompanion.so ./cmd/cybercompanion
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildmode=pie -ldflags="-s -w" -o android/app/src/main/jniLibs/x86_64/libcybercompanion.so ./cmd/cybercompanion
 
       - name: Build Android APK with Gradle
         working-directory: ./android
