@@ -216,6 +216,8 @@ public class BotService extends Service {
     }
 
     private void writeDefaultConfig(File dest) {
+        // 安全说明：passcode 与 web_password 均留空，由用户首次启动后自行设置。
+        // 内置固定口令等同于「任何读过源码的人都能拿到主人权限」，故不再提供默认值。
         String defaultConfig = "{\n" +
                 "  \"qq_appid\": \"\",\n" +
                 "  \"qq_secret\": \"\",\n" +
@@ -227,15 +229,22 @@ public class BotService extends Service {
                 "  \"active_persona\": \"deepseek_chan\",\n" +
                 "  \"owners\": [],\n" +
                 "  \"owners_file\": \"owners.json\",\n" +
-                "  \"daily_file\": \"daily_traffic.json\",\n" +
-                "  \"passcode\": \"复活吧我的爱人！！！elyisa\",\n" +
+                "  \"passcode\": \"\",\n" +
                 "  \"web_port\": 8088,\n" +
-                "  \"sandbox\": false,\n" +
-                "  \"stickers_dir\": \"./stickers\",\n" +
-                "  \"enable_stickers\": true\n" +
+                "  \"web_password\": \"\",\n" +
+                "  \"trusted_proxies\": [],\n" +
+                "  \"max_history_msgs\": 40,\n" +
+                "  \"token_budget\": 6000,\n" +
+                "  \"enable_stickers\": true,\n" +
+                "  \"enable_exec\": false,\n" +
+                "  \"exec_whitelist\": []\n" +
                 "}";
         try (FileOutputStream fos = new FileOutputStream(dest)) {
             fos.write(defaultConfig.getBytes("UTF-8"));
+            // 配置文件含面板密码与模型密钥，权限收紧为仅属主可读写
+            try {
+                Runtime.getRuntime().exec(new String[]{"chmod", "600", dest.getAbsolutePath()}).waitFor();
+            } catch (Exception ignored) {}
             Log.i(TAG, "Default config created at: " + dest.getAbsolutePath());
         } catch (Exception e) {
             Log.e(TAG, "Error writing default config: ", e);

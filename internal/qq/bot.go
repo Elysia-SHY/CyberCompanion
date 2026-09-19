@@ -2,16 +2,20 @@ package qq
 
 import (
 	"bytes"
-	"crypto/tls"
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"cybercompanion/internal/config"
 	"cybercompanion/internal/hal"
@@ -55,10 +59,24 @@ var (
 	tokenLock   sync.Mutex
 	tokenVal    string
 	tokenExpiry time.Time
-	httpClient  = &http.Client{
+	// httpClient 使用显式 Transport：不再关闭 TLS 证书校验。
+	// 原实现 InsecureSkipVerify: true 会让 HTTPS 完全失去中间人防护，
+	// 等于把 access_token、消息内容、AppSecret 暴露给任意中间设备。
+	httpClient = &http.Client{
 		Timeout: 120 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   15 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			MaxIdleConns:          50,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			ForceAttemptHTTP2:     true,
 		},
 	}
 )
@@ -81,19 +99,37 @@ func getAccessToken() (string, error) {
 		"clientSecret": cfg.QQSecret,
 	})
 
-	resp, err := httpClient.Post("https://bots.qq.com/app/getAppAccessToken",
-		"application/json", bytes.NewBuffer(body))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://bots.qq.com/app/getAppAccessToken", bytes.NewBuffer(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
+	// 响应体有界读取，避免异常服务端返回超大内容撑爆内存
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("QQ 鉴权接口返回 HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))
+	}
+
 	var res struct {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   string `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return "", err
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", fmt.Errorf("解析 QQ 鉴权响应失败: %w", err)
 	}
 	if res.AccessToken == "" {
 		return "", fmt.Errorf("empty access_token returned by QQ auth")
@@ -103,8 +139,13 @@ func getAccessToken() (string, error) {
 	if expSec <= 0 {
 		expSec = 7200
 	}
+	// 提前 5 分钟续期，避免临界点使用已过期 token
+	lead := 300
+	if expSec <= lead {
+		lead = expSec / 10
+	}
 	tokenVal = res.AccessToken
-	tokenExpiry = time.Now().Add(time.Duration(expSec-60) * time.Second)
+	tokenExpiry = time.Now().Add(time.Duration(expSec-lead) * time.Second)
 	AddLog("[Auth] Successfully renewed QQ Bot Access Token")
 	return tokenVal, nil
 }
@@ -167,9 +208,18 @@ func recordSession(key, userMsg, botReply string, isOwner bool) {
 		MemoryItem{Role: "user", Content: userMsg, Timestamp: now},
 		MemoryItem{Role: "assistant", Content: botReply, Timestamp: now},
 	)
-	// Normal users sliding window 40 msgs (20 rounds)
-	if !isOwner && len(sess.Messages) > 40 {
-		sess.Messages = sess.Messages[len(sess.Messages)-40:]
+
+	// 历史上限：普通用户 40 条，主人放宽到配置值（默认 40，下限 200 条防误配）。
+	// 原实现对主人完全不设上限，长期运行会让 sessions 无限膨胀直至 OOM。
+	limit := 40
+	if isOwner {
+		limit = config.Get().MaxHistoryMsgs * 5
+		if limit < 200 {
+			limit = 200
+		}
+	}
+	if len(sess.Messages) > limit {
+		sess.Messages = sess.Messages[len(sess.Messages)-limit:]
 	}
 }
 
@@ -296,9 +346,29 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 	var replyContent string
 
 	// 1. Passcode Check
-	if passcode != "" && strings.ReplaceAll(lowerText, " ", "") == strings.ReplaceAll(passcode, " ", "") {
-		_ = config.AddOwner(senderOpenID)
-		replyContent = "🎉 呜哇！主人！是真正的主人！💙\n\n已成功将您认证为【最高权限主人】✨\n已为您解除所有限制，开启长期上下文记忆与多模态视觉能力！硬件状态、系统控制全数解锁！"
+	// 归一化后做常量时间比较，避免通过响应时间逐字符猜解口令。
+	// 同时加入尝试限流：口令是唯一的主人权柄入口，不限速等于允许无限爆破。
+	if passcode != "" {
+		normInput := strings.ReplaceAll(lowerText, " ", "")
+		normPass := strings.ReplaceAll(passcode, " ", "")
+		// 先看是否形似口令尝试：短消息且不含明显闲聊特征
+		if isPasscodeAttempt(normInput, normPass, isOwner) {
+			if ok, waitMin := authLimiter.allow(senderOpenID); !ok {
+				AddLog("[Auth] 口令尝试过于频繁，已临时锁定 %s（%d 分钟）", maskOpenID(senderOpenID), waitMin)
+				replyContent = fmt.Sprintf("🚫 口令尝试次数过多，请 %d 分钟后再试。", waitMin)
+			} else if constantTimeStringEqual(normInput, normPass) {
+				authLimiter.reset(senderOpenID)
+				_ = config.AddOwner(senderOpenID)
+				AddLog("[Auth] %s 通过口令认证成为主人", maskOpenID(senderOpenID))
+				replyContent = "🎉 呜哇！主人！是真正的主人！💙\n\n已成功将您认证为【最高权限主人】✨\n已为您解除所有限制，开启长期上下文记忆与多模态视觉能力！硬件状态、系统控制全数解锁！"
+			} else {
+				authLimiter.fail(senderOpenID)
+			}
+		}
+	}
+
+	if replyContent != "" {
+		// 认证结果直接返回，不再走后续分支
 	} else if !isOwner {
 		// 2. Normal User
 		if lowerText == "状态" || lowerText == "/status" || lowerText == "重启" {
@@ -312,20 +382,7 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 		case lowerText == "状态" || lowerText == "/status" || lowerText == "info":
 			driver := hal.GetDriver()
 			info := driver.GetInfo()
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("💻 设备型号：%s\n", info.DeviceType))
-			sb.WriteString(fmt.Sprintf("⏱️ 运行时间：%s\n", info.Uptime))
-			sb.WriteString(fmt.Sprintf("📶 网络模式：%s (%s)\n", info.NetworkType, info.SignalRSRP))
-			if info.TrafficToday != "" {
-				sb.WriteString(fmt.Sprintf("📊 当天流量：%s\n", info.TrafficToday))
-			}
-			if len(info.Temperatures) > 0 {
-				sb.WriteString(fmt.Sprintf("🌡️ 核心温度：%s\n", strings.Join(info.Temperatures, " | ")))
-			}
-			if info.MemoryTotalMB > 0 {
-				sb.WriteString(fmt.Sprintf("🧠 内存占用：%d MB / %d MB\n", info.MemoryUsedMB, info.MemoryTotalMB))
-			}
-			replyContent = sb.String()
+			replyContent = formatHardwareReport(info)
 
 		case lowerText == "重启" || lowerText == "/reboot":
 			replyContent = "⚠️ 正在执行设备远程重启，预计 1 分钟后恢复在线。"
@@ -458,8 +515,12 @@ func executeLLMChat(sessionKey, userText string, imageURLs []string, isOwner boo
 // ─── WebSocket Engine ────────────────────────────────────────────────────────
 
 var (
+	// wsDialer 保持 TLS 证书校验开启。
+	// 原实现 InsecureSkipVerify: true 使 WebSocket 长连接可被中间人劫持，
+	// 攻击者可读取并篡改全部 QQ 消息内容与事件推送。
 	wsDialer = websocket.Dialer{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		HandshakeTimeout: 20 * time.Second,
+		Proxy:            http.ProxyFromEnvironment,
 	}
 	wsConnected bool
 	wsConnLock  sync.RWMutex
@@ -605,7 +666,7 @@ func runGatewaySession() error {
 				var msg InMessage
 				dBytes, _ := json.Marshal(payload.D)
 				if err := json.Unmarshal(dBytes, &msg); err == nil {
-					AddLog("[Message] C2C from %s: %s", msg.Author.UserOpenID, msg.Content)
+					AddLog("[Message] C2C from %s: %s", maskOpenID(msg.Author.UserOpenID), truncate(msg.Content, 80))
 					go HandleIncomingMessage(msg.Author.UserOpenID, "", msg.Content, msg.ID, msg.Attachments)
 				}
 			case "GROUP_AT_MESSAGE_CREATE":
@@ -616,10 +677,196 @@ func runGatewaySession() error {
 					if idx := strings.Index(content, ">"); idx != -1 && strings.HasPrefix(content, "<@") {
 						content = strings.TrimSpace(content[idx+1:])
 					}
-					AddLog("[Message] Group@ in %s: %s", msg.GroupOpenID, content)
+					AddLog("[Message] Group@ in %s: %s", maskOpenID(msg.GroupOpenID), truncate(content, 80))
 					go HandleIncomingMessage(msg.Author.MemberOpenID, msg.GroupOpenID, content, msg.ID, msg.Attachments)
 				}
 			}
 		}
 	}
+}
+
+// ─── 口令认证防护 ─────────────────────────────────────────────────────────────
+
+const (
+	authMaxAttempts = 5
+	authWindow      = 10 * time.Minute
+	authLockTime    = 30 * time.Minute
+)
+
+type authEntry struct {
+	count       int
+	firstAt     time.Time
+	lockedUntil time.Time
+}
+
+type authLimiterStore struct {
+	mu      sync.Mutex
+	entries map[string]*authEntry
+}
+
+var authLimiter = &authLimiterStore{entries: make(map[string]*authEntry)}
+
+func init() {
+	// 定期回收长期不活跃的限流记录，避免 OpenID 无限堆积
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			authLimiter.gc()
+		}
+	}()
+}
+
+func (s *authLimiterStore) gc() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for k, e := range s.entries {
+		if e.lockedUntil.Before(cutoff) && e.firstAt.Before(cutoff) {
+			delete(s.entries, k)
+		}
+	}
+}
+
+// allow 返回 (是否放行, 剩余锁定分钟数)
+func (s *authLimiterStore) allow(key string) (bool, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.entries[key]
+	if !ok {
+		return true, 0
+	}
+	if time.Now().Before(e.lockedUntil) {
+		return false, int(time.Until(e.lockedUntil).Minutes()) + 1
+	}
+	return true, 0
+}
+
+func (s *authLimiterStore) fail(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	e, ok := s.entries[key]
+	if !ok {
+		s.entries[key] = &authEntry{count: 1, firstAt: now}
+		return
+	}
+	// 超出统计窗口则重新计数
+	if now.Sub(e.firstAt) > authWindow {
+		e.count = 1
+		e.firstAt = now
+		e.lockedUntil = time.Time{}
+		return
+	}
+	e.count++
+	if e.count >= authMaxAttempts {
+		e.lockedUntil = now.Add(authLockTime)
+		AddLog("[Auth] %s 口令连续错误 %d 次，锁定 %v", maskOpenID(key), e.count, authLockTime)
+	}
+}
+
+func (s *authLimiterStore) reset(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.entries, key)
+}
+
+// isPasscodeAttempt 判断一条消息是否「像是口令尝试」。
+// 目的：只对疑似爆破的消息计数，正常闲聊不该被限流误伤。
+// 已是主人的用户不再参与限流判定。
+func isPasscodeAttempt(normInput, normPass string, isOwner bool) bool {
+	if isOwner {
+		// 主人重发口令应被接受（例如换了设备），但不消耗限流额度
+		return true
+	}
+	// 纯闲聊通常较长或含明显语气词，不做限制
+	if utf8.RuneCountInString(normInput) > 64 {
+		return false
+	}
+	if normInput == "" {
+		return false
+	}
+	return true
+}
+
+// constantTimeStringEqual 常量时间字符串比较，避免时序侧信道。
+func constantTimeStringEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// maskOpenID 对日志中的 OpenID 脱敏，避免明文身份标识落盘。
+func maskOpenID(id string) string {
+	if len(id) <= 8 {
+		return "***"
+	}
+	return id[:4] + "****" + id[len(id)-4:]
+}
+
+// formatHardwareReport 把硬件采集结果整理成 QQ 消息。
+// 改动要点：原实现只输出 5 项，且 CPU 占用、磁盘、内核等信息完全没有暴露；
+// 拿不到的项直接不显示，避免出现"当天流量：无上限"这类与硬件无关的假数据。
+func formatHardwareReport(info hal.DeviceInfo) string {
+	d := info.Details
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("💻 设备型号：%s\n", info.DeviceType))
+	sb.WriteString(fmt.Sprintf("🖥️ 系统架构：%s / %s\n", info.OS, info.Arch))
+	sb.WriteString(fmt.Sprintf("⏱️ 系统运行：%s\n", info.Uptime))
+
+	// CPU
+	if d.CPUModel != "" {
+		sb.WriteString(fmt.Sprintf("⚙️ 处理器：%s\n", truncate(d.CPUModel, 60)))
+	}
+	cpuLine := "🔥 CPU 占用："
+	if d.CPUCores > 0 {
+		cpuLine += fmt.Sprintf("%d 核 / ", d.CPUCores)
+	}
+	cpuLine += fmt.Sprintf("%.1f%%\n", d.CPUUsage)
+	sb.WriteString(cpuLine)
+	if d.LoadAvg != "" {
+		sb.WriteString(fmt.Sprintf("📈 平均负载：%s\n", d.LoadAvg))
+	}
+
+	// 内存
+	if d.MemoryTotalMB > 0 {
+		sb.WriteString(fmt.Sprintf("🧠 内存占用：%d MB / %d MB (%d%%)\n",
+			d.MemoryUsedMB, d.MemoryTotalMB, d.MemoryPercent))
+	}
+	if d.SwapTotalMB > 0 {
+		sb.WriteString(fmt.Sprintf("🔁 交换分区：%d MB / %d MB\n", d.SwapUsedMB, d.SwapTotalMB))
+	}
+
+	// 磁盘
+	if d.DiskTotalGB > 0 {
+		sb.WriteString(fmt.Sprintf("💾 存储空间：%.1f GB / %.1f GB (%s)\n",
+			d.DiskUsedGB, d.DiskTotalGB, d.DiskMount))
+	}
+
+	// 温度：拿不到就跳过，不再显示编造的读数
+	if len(info.Temperatures) > 0 {
+		sb.WriteString(fmt.Sprintf("🌡️ 核心温度：%s\n", strings.Join(info.Temperatures, " | ")))
+	}
+
+	// 电源
+	if d.BatteryLevel >= 0 {
+		sb.WriteString(fmt.Sprintf("🔋 电池电量：%d%% (%s)\n", d.BatteryLevel, d.BatteryStatus))
+	}
+
+	// 网络
+	sb.WriteString(fmt.Sprintf("📶 网络模式：%s (%s)\n", info.NetworkType, info.SignalRSRP))
+	if d.TrafficTotal != "" {
+		sb.WriteString(fmt.Sprintf("📊 累计流量：%s\n", d.TrafficTotal))
+	}
+	if len(d.NetworkIPs) > 0 {
+		sb.WriteString(fmt.Sprintf("🌐 本机地址：%s\n", truncate(strings.Join(d.NetworkIPs, ", "), 80)))
+	}
+
+	if d.Kernel != "" {
+		sb.WriteString(fmt.Sprintf("🧩 内核版本：%s\n", d.Kernel))
+	}
+	if d.ProcessCount > 0 {
+		sb.WriteString(fmt.Sprintf("📦 系统进程：%d 个\n", d.ProcessCount))
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
 }

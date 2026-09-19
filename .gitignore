@@ -10,9 +10,14 @@ build/
 
 # Local sensitive runtime configs
 config.json
+config.json.bak
 owners.json
 daily_traffic.json
 *.log
+
+# 命令执行审计日志（含已执行命令原文，禁止入库）
+exec_audit.log
+**/exec_audit.log
 
 # OS / IDE
 .DS_Store

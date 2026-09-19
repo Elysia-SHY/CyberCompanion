@@ -2,6 +2,7 @@ package com.cybercompanion.app;
 
 import android.Manifest;
 import android.content.Intent;
+import android.net.Uri;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.os.Build;
@@ -93,7 +94,37 @@ public class MainActivity extends AppCompatActivity {
         settings.setLoadWithOverviewMode(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
+        // ── WebView 安全加固 ──────────────────────────────────────────────
+        // 面板是本地回环页面，不需要访问文件系统或跨源资源。
+        // 关闭这些开关可避免恶意页面通过 file:// 读取应用私有数据。
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setAllowFileAccessFromFileURLs(false);
+        settings.setAllowUniversalAccessFromFileURLs(false);
+        // 本地页面为 http://127.0.0.1，禁止其加载 https 之外的混合内容
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        settings.setGeolocationEnabled(false);
+        settings.setSaveFormData(false);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            settings.setSafeBrowsingEnabled(true);
+        }
+
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                // 只允许停留在本地回环面板；任何外部跳转一律交给系统浏览器，
+                // 避免面板页面被导航到恶意站点后继承 WebView 的 JS 权限。
+                if (isLocalPanelUrl(url)) {
+                    return false;
+                }
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                } catch (Exception e) {
+                    Log.w(TAG, "无法打开外部链接: " + url, e);
+                }
+                return true;
+            }
+
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
@@ -170,4 +201,13 @@ public class MainActivity extends AppCompatActivity {
             super.onBackPressed();
         }
     }
+
+    /** 判断 URL 是否指向本机面板（仅 127.0.0.1 / localhost 的 8088 端口）。 */
+    private boolean isLocalPanelUrl(String url) {
+        if (url == null) return false;
+        return url.startsWith("http://127.0.0.1:8088")
+                || url.startsWith("http://localhost:8088")
+                || url.equals("about:blank");
+    }
+
 }

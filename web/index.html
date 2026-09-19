@@ -108,11 +108,29 @@
             <h3>🧠 资源占用</h3>
             <div class="gauge-group">
               <div class="gauge-label">
+                <span>CPU</span>
+                <span id="cpu-label">-- / --</span>
+              </div>
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="cpu-fill" style="width: 0%"></div>
+              </div>
+            </div>
+            <div class="gauge-group">
+              <div class="gauge-label">
                 <span>内存 (RAM)</span>
                 <span id="mem-label">-- / --</span>
               </div>
               <div class="progress-bar-bg">
                 <div class="progress-bar-fill" id="mem-fill" style="width: 0%"></div>
+              </div>
+            </div>
+            <div class="gauge-group">
+              <div class="gauge-label">
+                <span>存储 (根分区)</span>
+                <span id="disk-label">-- / --</span>
+              </div>
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="disk-fill" style="width: 0%"></div>
               </div>
             </div>
             <div class="temperatures-list" id="temp-tags">
@@ -121,15 +139,28 @@
           </div>
 
           <div class="card">
+            <h3>🔧 详细硬件规格</h3>
+            <div class="spec-list" id="spec-list">
+              <!-- Key/value specs injected here -->
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-1">
+          <div class="card">
             <h3>🌐 移动流量与网络统计</h3>
             <div class="traffic-box">
               <div class="traffic-item">
-                <span class="traffic-label">当天累计流量</span>
+                <span class="traffic-label">累计流量</span>
                 <span class="traffic-val" id="stat-traffic-today">--</span>
               </div>
               <div class="traffic-item">
                 <span class="traffic-label">信号质量 (RSRP)</span>
                 <span class="traffic-val" id="stat-rsrp-detail">--</span>
+              </div>
+              <div class="traffic-item">
+                <span class="traffic-label">本机地址</span>
+                <span class="traffic-val" id="stat-network-ips">--</span>
               </div>
             </div>
           </div>

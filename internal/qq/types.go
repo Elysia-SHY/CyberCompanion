@@ -12,9 +12,9 @@ type WSHelloData struct {
 }
 
 type WSIdentifyData struct {
-	Token   string   `json:"token"`
-	Intents int      `json:"intents"`
-	Shard   []int    `json:"shard"`
+	Token      string `json:"token"`
+	Intents    int    `json:"intents"`
+	Shard      []int  `json:"shard"`
 	Properties struct {
 		OS      string `json:"$os"`
 		Browser string `json:"$browser"`
@@ -32,11 +32,11 @@ type Attachment struct {
 }
 
 type Author struct {
-	ID          string `json:"id"`
-	Username    string `json:"username"`
-	Avatar      string `json:"avatar"`
-	Bot         bool   `json:"bot"`
-	UserOpenID  string `json:"user_openid"`
+	ID           string `json:"id"`
+	Username     string `json:"username"`
+	Avatar       string `json:"avatar"`
+	Bot          bool   `json:"bot"`
+	UserOpenID   string `json:"user_openid"`
 	MemberOpenID string `json:"member_openid"`
 }
 

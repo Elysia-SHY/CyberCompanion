@@ -1,0 +1,256 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+# 同一分支的新推送取消旧构建，节省额度
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.21'
+
+jobs:
+  # ────────────────────────────────────────────────────────────
+  # 1. 代码质量：格式化、静态检查、vet
+  # ────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt 检查
+        run: |
+          echo "── 检查代码格式 ──"
+          UNFORMATTED=$(gofmt -l . 2>/dev/null | grep -v '^$' || true)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::以下文件未通过 gofmt，请运行 'gofmt -w .'"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+          echo "✅ 全部文件格式规范"
+
+      - name: go mod tidy 检查
+        run: |
+          go mod tidy
+          if ! git diff --quiet go.mod go.sum; then
+            echo "::error::go.mod / go.sum 不是最新，请运行 'go mod tidy' 并提交"
+            git diff go.mod go.sum
+            exit 1
+          fi
+          echo "✅ 依赖文件一致"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: govulncheck 漏洞扫描
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./... || echo "::warning::发现潜在漏洞，请检查上方输出"
+
+  # ────────────────────────────────────────────────────────────
+  # 2. 单元测试（含竞态检测与覆盖率）
+  # ────────────────────────────────────────────────────────────
+  test:
+    name: Test (race + coverage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: 运行测试
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee test-output.txt
+
+      - name: 覆盖率摘要
+        run: |
+          echo "## 测试覆盖率" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=coverage.out | tail -20 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: 上传覆盖率报告
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.out
+          retention-days: 7
+
+  # ────────────────────────────────────────────────────────────
+  # 3. 全平台交叉编译矩阵
+  # ────────────────────────────────────────────────────────────
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, extra: "" }
+          - { goos: linux,   goarch: arm64, extra: "" }
+          - { goos: linux,   goarch: arm,   extra: "GOARM=7" }
+          - { goos: darwin,  goarch: amd64, extra: "" }
+          - { goos: darwin,  goarch: arm64, extra: "" }
+          - { goos: windows, goarch: amd64, extra: "" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: 编译 ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          export ${{ matrix.extra }}
+          SUFFIX=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then SUFFIX=".exe"; fi
+          OUT="cybercompanion-${{ matrix.goos }}-${{ matrix.goarch }}${SUFFIX}"
+          go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_SHA::8}" \
+            -o "build/$OUT" ./cmd/cybercompanion
+          ls -lh "build/$OUT"
+          echo "BUILT=$OUT" >> $GITHUB_ENV
+
+      - name: 冒烟测试（仅本机架构可执行）
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          ./build/cybercompanion-linux-amd64 -version
+
+      - name: 硬件采集冒烟测试（验证详细硬件信息在真实环境下可采集）
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          set -e
+          ./build/cybercompanion-linux-amd64 -hardware-json > /tmp/hw.json
+          echo "--- 采集结果 ---"
+          cat /tmp/hw.json
+          # 关键断言：核心字段必须真实取到，且不得出现编造的占位值
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open('/tmp/hw.json'))
+          x = d['device']['details']
+          dev = d['device']
+          fails = []
+
+          if x['cpu_cores'] <= 0:
+              fails.append(f"cpu_cores 应 > 0，实际 {x['cpu_cores']}")
+          if x['memory_total_mb_ext'] <= 0:
+              fails.append(f"memory_total_mb_ext 应 > 0，实际 {x['memory_total_mb_ext']}")
+          if not (0 <= x['cpu_usage'] <= 100):
+              fails.append(f"cpu_usage 越界: {x['cpu_usage']}")
+          if x['disk_total_gb'] <= 0:
+              fails.append(f"disk_total_gb 应 > 0，实际 {x['disk_total_gb']}")
+          if not x['collected_at']:
+              fails.append("collected_at 为空")
+
+          # 顶层运行时长必须与详情一致，避免面板出现两个矛盾的数字
+          if x['system_uptime'] and dev['uptime'] != x['system_uptime']:
+              fails.append(f"uptime 不一致: 顶层={dev['uptime']} 详情={x['system_uptime']}")
+
+          # 禁止编造的占位值回流
+          fabricated = ["无上限", "满格", "Core: 优", "Core: 良好", "Core: Normal", "统计中"]
+          for t in dev['temperatures']:
+              for f in fabricated:
+                  if f in t:
+                      fails.append(f"温度出现编造值 {f!r}: {t!r}")
+
+          # 标注为未提供的项，其数值必须真的是零值
+          if 'memory' in x['unavailable'] and x['memory_total_mb_ext'] != 0:
+              fails.append("memory 标注未提供但总量非零")
+          if 'temperatures' in x['unavailable'] and len(dev['temperatures']) != 0:
+              fails.append("temperatures 标注未提供但列表非空")
+
+          if fails:
+              print("\n❌ 硬件采集校验失败:")
+              for f in fails:
+                  print("  -", f)
+              sys.exit(1)
+          print("\n✅ 硬件采集校验通过")
+          print(f"   CPU 型号: {x['cpu_model']}")
+          print(f"   核心数  : {x['cpu_cores']}")
+          print(f"   内存    : {x['memory_used_mb_ext']}/{x['memory_total_mb_ext']} MB")
+          print(f"   磁盘    : {x['disk_used_gb']}/{x['disk_total_gb']} GB")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUILT }}
+          path: build/${{ env.BUILT }}
+          retention-days: 7
+
+  # ────────────────────────────────────────────────────────────
+  # 4. Android 构建检查（仅验证可编译，不产出发布包）
+  # ────────────────────────────────────────────────────────────
+  android:
+    name: Android Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: 编译 Android 原生库
+        run: |
+          mkdir -p android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -buildmode=pie \
+            -ldflags="-s -w" -o android/app/src/main/jniLibs/arm64-v8a/libcybercompanion.so ./cmd/cybercompanion
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath \
+            -ldflags="-s -w" -o android/app/src/main/jniLibs/armeabi-v7a/libcybercompanion.so ./cmd/cybercompanion
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildmode=pie \
+            -ldflags="-s -w" -o android/app/src/main/jniLibs/x86_64/libcybercompanion.so ./cmd/cybercompanion
+          ls -lh android/app/src/main/jniLibs/*/
+
+      - name: 生成 gradle-wrapper.jar（若仓库中缺失）
+        working-directory: ./android
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "wrapper jar 缺失，使用 setup-gradle 提供的 gradle 生成..."
+            gradle wrapper --gradle-version 8.5 --no-daemon
+          fi
+          chmod +x gradlew
+          ls -l gradlew gradle/wrapper/
+
+      - name: Gradle 编译检查
+        working-directory: ./android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: 上传 APK 供人工验证
+        uses: actions/upload-artifact@v4
+        with:
+          name: CyberCompanion-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7

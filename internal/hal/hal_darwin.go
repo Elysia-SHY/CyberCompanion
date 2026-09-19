@@ -1,12 +1,10 @@
+//go:build darwin
+
 package hal
 
 import (
-	"bytes"
 	"fmt"
-	"os/exec"
 	"runtime"
-	"strconv"
-	"strings"
 )
 
 type DarwinDriver struct{}
@@ -26,52 +24,38 @@ func (d *DarwinDriver) Detect() bool {
 	return runtime.GOOS == "darwin"
 }
 
+// GetInfo 采集 macOS 宿主真实信息。
+// 改动要点：原实现把"已用内存"直接写成总内存的一半、温度写死 "SoC: 正常"、
+// CPU 占用恒为 0。现在内存用量来自 vm_stat（active + wired + compressed），
+// 温度因系统不向用户态暴露而明确留空。
 func (d *DarwinDriver) GetInfo() DeviceInfo {
+	name := d.Name()
+	if model := platformCPUModel(); model != "" {
+		name = fmt.Sprintf("macOS (%s)", model)
+	}
+
 	info := DeviceInfo{
-		DeviceType:    d.Name(),
-		Arch:          runtime.GOARCH,
-		OS:            runtime.GOOS,
-		Hostname:      getHostname(),
-		Uptime:        GetBaseUptime(),
-		NetworkType:   "Wi-Fi / Ethernet",
-		SignalRSRP:    "已连入局域网",
-		SignalBar:     5,
-		TrafficToday:  "无上限",
-		Temperatures:  []string{"SoC: 正常"},
-		MemoryUsedMB:  0,
-		MemoryTotalMB: 0,
+		DeviceType:   name,
+		Arch:         runtime.GOARCH,
+		OS:           runtime.GOOS,
+		Hostname:     getHostname(),
+		Uptime:       GetBaseUptime(),
+		NetworkType:  "Wi-Fi / Ethernet",
+		SignalBar:    5,
+		Temperatures: []string{},
 	}
+	info.Enrich()
 
-	// Read total memory via sysctl
-	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
-	if err == nil {
-		if bytesVal, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64); err == nil {
-			info.MemoryTotalMB = bytesVal / (1024 * 1024)
-			// Rough estimate of active memory
-			info.MemoryUsedMB = info.MemoryTotalMB / 2
-		}
+	if len(info.Details.NetworkIPs) == 0 {
+		info.SignalRSRP = "未检测到活动网卡"
+		info.SignalBar = 0
+	} else {
+		info.SignalRSRP = fmt.Sprintf("已连网 (%d 个地址)", len(info.Details.NetworkIPs))
+		info.SignalBar = 5
 	}
-
-	// Read CPU brand
-	cpuOut, err := exec.Command("sysctl", "-n", "machdep.cpu.brand_string").Output()
-	if err == nil && len(cpuOut) > 0 {
-		brand := strings.TrimSpace(string(cpuOut))
-		if brand != "" {
-			info.DeviceType = fmt.Sprintf("macOS (%s)", brand)
-		}
-	}
-
 	return info
 }
 
 func (d *DarwinDriver) ExecuteRootCmd(cmd string) (string, error) {
-	c := exec.Command("sh", "-c", cmd)
-	var out, stderr bytes.Buffer
-	c.Stdout = &out
-	c.Stderr = &stderr
-	err := c.Run()
-	if err != nil {
-		return strings.TrimSpace(stderr.String()), err
-	}
-	return strings.TrimSpace(out.String()), nil
+	return RunRootCmdWithShell(cmd, "sh", "-c")
 }

@@ -3,11 +3,8 @@
 package hal
 
 import (
-	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -47,82 +44,62 @@ func (d *U20Driver) Detect() bool {
 	return false
 }
 
+// GetInfo 采集 Flymodem U20 真实信息。
+// 改动要点：信号强度原本写死 "-85 dBm (良好)"、流量写死 "统计中..."，
+// 现在改为从 /proc/net/dev 统计真实流量，信号拿不到就明确标注未提供。
 func (d *U20Driver) GetInfo() DeviceInfo {
 	info := DeviceInfo{
-		DeviceType:    d.Name(),
-		Arch:          runtime.GOARCH,
-		OS:            runtime.GOOS,
-		Hostname:      getHostname(),
-		Uptime:        GetBaseUptime(),
-		NetworkType:   "5G NR / LTE",
-		SignalRSRP:    "-85 dBm (良好)",
-		SignalBar:     4,
-		TrafficToday:  "统计中...",
-		Temperatures:  []string{},
-		MemoryUsedMB:  0,
-		MemoryTotalMB: 0,
+		DeviceType:   d.Name(),
+		Arch:         runtime.GOARCH,
+		OS:           runtime.GOOS,
+		Hostname:     getHostname(),
+		Uptime:       GetBaseUptime(),
+		NetworkType:  "5G NR / LTE",
+		Temperatures: []string{},
 	}
+	info.Enrich()
 
-	// Read thermal zones
-	zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
-	for i, z := range zones {
-		if i > 3 {
-			break
-		}
-		if data, err := os.ReadFile(z); err == nil {
-			tStr := strings.TrimSpace(string(data))
-			if tVal, err := strconv.Atoi(tStr); err == nil {
-				// usually millidegree
-				if tVal > 1000 {
-					tVal /= 1000
-				}
-				info.Temperatures = append(info.Temperatures, fmt.Sprintf("Zone%d: %d°C", i, tVal))
-			}
-		}
-	}
-	if len(info.Temperatures) == 0 {
-		info.Temperatures = []string{"Core: ~43°C"}
-	}
-
-	// Read memory from /proc/meminfo
-	if memData, err := os.ReadFile("/proc/meminfo"); err == nil {
-		lines := strings.Split(string(memData), "\n")
-		var totalKb, availKb int64
-		for _, line := range lines {
-			if strings.HasPrefix(line, "MemTotal:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					totalKb, _ = strconv.ParseInt(fields[1], 10, 64)
-				}
-			} else if strings.HasPrefix(line, "MemAvailable:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					availKb, _ = strconv.ParseInt(fields[1], 10, 64)
-				}
-			}
-		}
-		if totalKb > 0 {
-			info.MemoryTotalMB = totalKb / 1024
-			info.MemoryUsedMB = (totalKb - availKb) / 1024
-		}
+	// 信号强度取模组暴露的 RSSI 文件（不同固件路径不一，逐个探测）
+	if rssi := readModemRSSI(); rssi != "" {
+		info.SignalRSRP = rssi
+		info.SignalBar = 4
+	} else {
+		info.SignalRSRP = "模组未提供"
+		info.SignalBar = 0
 	}
 
 	return info
 }
 
+// readModemRSSI 尝试从常见路径读取蜂窝信号强度。
+// 不同固件差异很大，读不到时返回空字符串让上层标注"未提供"。
+func readModemRSSI() string {
+	paths := []string{
+		"/sys/class/net/wwan0/device/rssi",
+		"/sys/class/net/rmnet0/device/rssi",
+		"/proc/net/wwan/rssi",
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		s := strings.TrimSpace(string(data))
+		if s == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(s); err == nil {
+			return fmt.Sprintf("%d dBm", n)
+		}
+		return s
+	}
+	return ""
+}
+
 func (d *U20Driver) ExecuteRootCmd(cmd string) (string, error) {
-	var c *exec.Cmd
+	shell := "sh"
 	if _, err := os.Stat("/system/bin/sh"); err == nil {
-		c = exec.Command("/system/bin/sh", "-c", cmd)
-	} else {
-		c = exec.Command("sh", "-c", cmd)
+		shell = "/system/bin/sh"
 	}
-	var out, stderr bytes.Buffer
-	c.Stdout = &out
-	c.Stderr = &stderr
-	err := c.Run()
-	if err != nil {
-		return strings.TrimSpace(stderr.String()), err
-	}
-	return strings.TrimSpace(out.String()), nil
+	return RunRootCmdWithShell(cmd, shell, "-c")
 }

@@ -2,12 +2,19 @@
 # ==============================================================================
 # CyberCompanion 一键自启部署脚本
 # 支持设备：随身 WiFi (U20, 高通410/210)、树莓派、Linux 服务器、Termux
+#
+# 环境变量：
+#   CC_REPO=owner/repo   覆盖默认仓库
+#   CC_VERSION=v1.1.0    安装指定版本（默认 latest）
+#   CC_SKIP_VERIFY=1     跳过 SHA256 校验（不推荐）
 # ==============================================================================
 
-set -e
+set -euo pipefail
 
-REPO="Elysia-SHY/CyberCompanion"
+REPO="${CC_REPO:-Elysia-SHY/CyberCompanion}"
+VERSION="${CC_VERSION:-latest}"
 INSTALL_DIR="/opt/cybercompanion"
+BIN_NAME="cybercompanion"
 
 # Detect if Android / UFI environment
 if [ -d "/data/local" ] || [ -f "/system/build.prop" ]; then
@@ -44,22 +51,114 @@ echo "📁 安装目录: $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-# Download binary if not present locally
-if [ ! -f "cybercompanion" ]; then
-    echo "⬇️ 正在下载最新版本的 CyberCompanion ($BIN_ARCH)..."
-    DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/cybercompanion-$BIN_ARCH"
-    if command -v curl >/dev/null 2>&1; then
-        curl -sL "$DOWNLOAD_URL" -o cybercompanion
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO cybercompanion "$DOWNLOAD_URL"
-    else
-        echo "❌ 缺少 curl 或 wget 下载工具"
-        exit 1
-    fi
-    chmod +x cybercompanion
+# ------------------------------------------------------------------------------
+# 下载工具选择
+# ------------------------------------------------------------------------------
+if command -v curl >/dev/null 2>&1; then
+    DL() { curl -fsSL "$1" -o "$2"; }
+    DL_STDOUT() { curl -fsSL "$1"; }
+    HAVE_DL=1
+elif command -v wget >/dev/null 2>&1; then
+    DL() { wget -qO "$2" "$1"; }
+    DL_STDOUT() { wget -qO- "$1"; }
+    HAVE_DL=1
+else
+    echo "❌ 缺少 curl 或 wget 下载工具"
+    exit 1
 fi
 
-# Create default config if missing
+# ------------------------------------------------------------------------------
+# 校验工具选择：优先 sha256sum，回退 openssl / shasum / busybox
+# ------------------------------------------------------------------------------
+SHA256_OF() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 "$file" | awk '{print $NF}'
+    elif command -v busybox >/dev/null 2>&1; then
+        busybox sha256sum "$file" | awk '{print $1}'
+    else
+        echo ""
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 下载二进制（含 SHA256 校验 + 失败重试）
+# ------------------------------------------------------------------------------
+if [ ! -f "$BIN_NAME" ]; then
+    BASE_URL="https://github.com/$REPO/releases"
+    if [ "$VERSION" = "latest" ]; then
+        BIN_URL="$BASE_URL/latest/download/$BIN_NAME-$BIN_ARCH"
+        SUM_URL="$BASE_URL/latest/download/SHA256SUMS.txt"
+    else
+        BIN_URL="$BASE_URL/download/$VERSION/$BIN_NAME-$BIN_ARCH"
+        SUM_URL="$BASE_URL/download/$VERSION/SHA256SUMS.txt"
+    fi
+
+    echo "⬇️ 正在下载 $BIN_NAME ($BIN_ARCH, $VERSION)..."
+    TMP_BIN=".${BIN_NAME}.download.$$"
+    rm -f "$TMP_BIN"
+
+    ok=0
+    for attempt in 1 2 3; do
+        if DL "$BIN_URL" "$TMP_BIN"; then
+            ok=1
+            break
+        fi
+        echo "⚠️ 第 $attempt 次下载失败，2 秒后重试..."
+        sleep 2
+    done
+
+    if [ "$ok" -ne 1 ] || [ ! -s "$TMP_BIN" ]; then
+        echo "❌ 二进制下载失败：$BIN_URL"
+        echo "   （若网络受限，可先手动下载后放到 $INSTALL_DIR/$BIN_NAME）"
+        rm -f "$TMP_BIN"
+        exit 1
+    fi
+
+    # ---- SHA256 校验：防止下载被劫持或文件损坏 ----
+    if [ "${CC_SKIP_VERIFY:-0}" != "1" ]; then
+        echo "🔐 正在校验文件完整性..."
+        EXPECTED=""
+        SUMS_FILE=".SHA256SUMS.$$"
+        if DL "$SUM_URL" "$SUMS_FILE" 2>/dev/null; then
+            EXPECTED=$(grep -E "[[:space:]]\*?${BIN_NAME}-${BIN_ARCH}$" "$SUMS_FILE" 2>/dev/null | awk '{print $1}' | head -n1 || true)
+        fi
+        rm -f "$SUMS_FILE"
+
+        ACTUAL=$(SHA256_OF "$TMP_BIN")
+
+        if [ -z "$ACTUAL" ]; then
+            echo "⚠️ 当前系统缺少可用的 SHA256 工具，跳过校验。"
+            echo "   建议安装 coreutils 后重试，或设置 CC_SKIP_VERIFY=1 显式跳过。"
+        elif [ -z "$EXPECTED" ]; then
+            echo "⚠️ 未能获取官方 SHA256SUMS.txt，跳过校验。"
+            echo "   下载地址: $SUM_URL"
+        elif [ "$EXPECTED" = "$ACTUAL" ]; then
+            echo "✅ SHA256 校验通过: $ACTUAL"
+        else
+            echo "❌ SHA256 校验失败，文件可能被篡改或下载不完整！"
+            echo "   期望: $EXPECTED"
+            echo "   实际: $ACTUAL"
+            rm -f "$TMP_BIN"
+            exit 1
+        fi
+    else
+        echo "⚠️ 已通过 CC_SKIP_VERIFY=1 跳过 SHA256 校验（不推荐）"
+    fi
+
+    mv "$TMP_BIN" "$BIN_NAME"
+    chmod 755 "$BIN_NAME"
+else
+    echo "ℹ️ 已存在 $INSTALL_DIR/$BIN_NAME，跳过下载。"
+fi
+
+# ------------------------------------------------------------------------------
+# 生成默认配置（口令留空，由用户在 Web 面板或 QQ 中自行设定）
+# ------------------------------------------------------------------------------
 if [ ! -f "config.json" ]; then
     echo "⚙️ 生成默认配置文件 config.json..."
     cat << 'EOF' > config.json
@@ -74,25 +173,32 @@ if [ ! -f "config.json" ]; then
   "active_persona": "deepseek_chan",
   "owners": [],
   "owners_file": "owners.json",
-  "daily_file": "daily_traffic.json",
-  "passcode": "复活吧我的爱人！！！elyisa",
+  "passcode": "",
   "web_port": 8088,
-  "sandbox": false,
-  "stickers_dir": "./stickers",
-  "enable_stickers": true
+  "web_password": "",
+  "trusted_proxies": [],
+  "max_history_msgs": 40,
+  "token_budget": 6000,
+  "enable_stickers": true,
+  "enable_exec": false,
+  "exec_whitelist": []
 }
 EOF
+    chmod 600 config.json
+    echo "🔒 配置文件权限已收紧为 600。"
 fi
 
-# Service Configuration
+# ------------------------------------------------------------------------------
+# 服务配置
+# ------------------------------------------------------------------------------
 if [ "$IS_ANDROID" -eq 1 ]; then
     echo "📱 检测为随身 WiFi / Android 宿主环境，配置后台自启动..."
     cat << EOF > run.sh
 #!/bin/sh
 cd $INSTALL_DIR
-exec ./cybercompanion -config $INSTALL_DIR/config.json >> $INSTALL_DIR/run.log 2>&1 &
+exec ./$BIN_NAME -config $INSTALL_DIR/config.json >> $INSTALL_DIR/run.log 2>&1 &
 EOF
-    chmod +x run.sh
+    chmod 755 run.sh
 
     # Auto hook to common boot locations if root
     if [ -d "/data/adb/service.d" ]; then
@@ -108,13 +214,18 @@ else
 [Unit]
 Description=CyberCompanion AI Bot Service
 After=network.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/cybercompanion -config $INSTALL_DIR/config.json
+ExecStart=$INSTALL_DIR/$BIN_NAME -config $INSTALL_DIR/config.json
 Restart=always
 RestartSec=5
+# 基础加固：禁止提权、限制可写路径
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -124,7 +235,7 @@ EOF
         sudo systemctl restart cybercompanion
         echo "🎉 Systemd 服务已激活并自启！"
     else
-        nohup "$INSTALL_DIR/cybercompanion" -config "$INSTALL_DIR/config.json" > "$INSTALL_DIR/run.log" 2>&1 &
+        nohup "$INSTALL_DIR/$BIN_NAME" -config "$INSTALL_DIR/config.json" > "$INSTALL_DIR/run.log" 2>&1 &
         echo "🎉 已通过 nohup 后台启动！"
     fi
 fi
@@ -134,5 +245,11 @@ echo ""
 echo "=========================================================="
 echo "  🌟 部署完成！"
 echo "  🌐 Web 控制面板地址: http://$IP_ADDR:8088"
-echo "  💡 登录面板配置 QQ AppID、Secret 和 API Key 即刻唤醒！"
+echo "  🔑 首次启动的登录密码打印在程序日志中，请查看 run.log"
+echo "     或执行: grep -i '登录密码\\|web' $INSTALL_DIR/run.log"
+echo ""
+echo "  ⚠️  安全提醒："
+echo "     1. 面板默认仅支持本机访问，如需外网请自行加反代 + HTTPS"
+echo "     2. 请在面板中设置「主人认证口令」，之后在 QQ 中私聊机器人发送它"
+echo "     3. 若无必要，请保持 \"enable_exec\": false"
 echo "=========================================================="
