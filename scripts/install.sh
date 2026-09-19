@@ -6,7 +6,7 @@
 
 set -e
 
-REPO="your-github-username/CyberCompanion"
+REPO="Elysia-SHY/CyberCompanion"
 INSTALL_DIR="/opt/cybercompanion"
 
 # Detect if Android / UFI environment

@@ -75,14 +75,14 @@ flowchart TD
 ### 方式一：随身 WiFi 与 Linux 一键安装
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/your-github-username/CyberCompanion/main/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/Elysia-SHY/CyberCompanion/main/scripts/install.sh | bash
 ```
 
 脚本自动检测当前机器架构并下载对应二进制文件，配置后台启动。
 
 ### 方式二：手动下载运行
 
-前往 [Releases 页面](https://github.com/your-github-username/CyberCompanion/releases) 下载对应架构的可执行文件：
+前往 [Releases 页面](https://github.com/Elysia-SHY/CyberCompanion/releases) 下载对应架构的可执行文件：
 
 ```bash
 # macOS Apple Silicon
@@ -131,7 +131,7 @@ cybercompanion.exe
 编译需要 Go 1.21 或更高版本：
 
 ```bash
-git clone https://github.com/your-github-username/CyberCompanion.git
+git clone https://github.com/Elysia-SHY/CyberCompanion.git
 cd CyberCompanion
 
 # 编译当前平台
