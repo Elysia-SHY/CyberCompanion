@@ -4,6 +4,9 @@ cybercompanion.exe
 cybercompanion-*
 dist/
 build/
+*.so
+.gradle/
+**/build/
 
 # Local sensitive runtime configs
 config.json

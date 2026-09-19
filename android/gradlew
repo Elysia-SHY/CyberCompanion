@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# Standard Gradle wrapper execution script
+set -e
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+WRAPPER_JAR="$DIR/gradle/wrapper/gradle-wrapper.jar"
+
+# If gradle-wrapper.jar does not exist, download it or use system gradle
+if [ ! -f "$WRAPPER_JAR" ]; then
+    if command -v gradle >/dev/null 2>&1; then
+        exec gradle "$@"
+    fi
+    mkdir -p "$DIR/gradle/wrapper"
+    echo "Downloading gradle-wrapper.jar..."
+    curl -sLo "$WRAPPER_JAR" https://raw.githubusercontent.com/gradle/gradle/master/gradle/wrapper/gradle-wrapper.jar || \
+    wget -qO "$WRAPPER_JAR" https://raw.githubusercontent.com/gradle/gradle/master/gradle/wrapper/gradle-wrapper.jar
+fi
+
+exec java -Xmx2048m -jar "$WRAPPER_JAR" "$@"

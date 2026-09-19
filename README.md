@@ -66,13 +66,20 @@ flowchart TD
 | **Mac (Apple Silicon)** | M1 / M2 / M3 / M4 | `darwin-arm64` | CPU 型号、系统负载、内存用量 | 直接运行 |
 | **Mac (Intel)** | 2020 之前 Intel Mac | `darwin-amd64` | 系统负载、内存用量 | 直接运行 |
 | **开发板 / 软路由** | 树莓派 4/5, x86 软路由 | `linux-arm64` / `linux-amd64` | SoC 温度、负载、网卡流量 | Systemd / Docker |
+| **Android 手机 / 平板** | Android 7.0+ (ARM64 / ARMv7) | `.apk` 安装包 | 手机网络、前台守护、内置图形界面 | APK 直接安装运行 (免 Root) |
 | **Windows PC** | Windows 10 / 11 (x64) | `windows-amd64` | 内存、系统信息 | `cybercompanion.exe` |
 
 ---
 
 ## 快速开始
 
-### 方式一：随身 WiFi 与 Linux 一键安装
+### 方式一：Android 手机 / 平板直接安装 (推荐手机用户)
+
+前往 [Releases 页面](https://github.com/Elysia-SHY/CyberCompanion/releases) 下载 `CyberCompanion-Android-v1.0.0.apk`。
+- 安装后直接启动，应用通过前台常驻服务维持后台 24 小时运行。
+- 打开应用即可在手机屏幕上直接操作 Web 控制台，无需 Root 权限。
+
+### 方式二：随身 WiFi 与 Linux 一键安装
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Elysia-SHY/CyberCompanion/main/scripts/install.sh | bash
@@ -80,7 +87,7 @@ curl -sSL https://raw.githubusercontent.com/Elysia-SHY/CyberCompanion/main/scrip
 
 脚本自动检测当前机器架构并下载对应二进制文件，配置后台启动。
 
-### 方式二：手动下载运行
+### 方式三：手动下载运行 (Mac / PC / 服务器)
 
 前往 [Releases 页面](https://github.com/Elysia-SHY/CyberCompanion/releases) 下载对应架构的可执行文件：
 
