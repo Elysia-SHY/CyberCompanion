@@ -19,3 +19,6 @@ daily_traffic.json
 Thumbs.db
 .vscode/
 .idea/
+
+downloaded_artifacts/
+release_dist/
