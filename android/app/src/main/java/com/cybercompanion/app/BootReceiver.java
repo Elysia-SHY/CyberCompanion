@@ -13,6 +13,9 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
             Log.i(TAG, "Device boot completed, starting CyberCompanion service...");
+            // 开机后重新注册兜底任务（setPersisted 在部分精简 ROM 上不生效，
+            // 开机广播里再注册一次可以覆盖这种情况）
+            KeepAliveJobService.schedule(context);
             Intent serviceIntent = new Intent(context, BotService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent);

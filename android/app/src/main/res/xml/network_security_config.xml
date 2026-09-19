@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全策略。
+
+  旧配置使用 usesCleartextTraffic="true" 全局放开明文流量，
+  意味着任何 HTTP 请求（含 API Key）都可能被中间人窃取。
+
+  这里收紧为：默认禁止明文，仅放行本机回环地址 ——
+  WebView 需要访问 http://127.0.0.1:8088 上的本地管理面板。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

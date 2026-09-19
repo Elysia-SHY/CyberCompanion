@@ -73,6 +73,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startCoreService() {
+        // 注册 JobScheduler 兜底拉活：前台服务在国产 ROM 上仍可能被清理，
+        // 由系统统一调度的 Job 是官方认可的恢复入口。
+        KeepAliveJobService.schedule(this);
         try {
             Intent serviceIntent = new Intent(this, BotService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
