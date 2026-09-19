@@ -101,8 +101,7 @@ jobs:
       - name: Build Android APK with Gradle
         working-directory: ./android
         run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          gradle assembleDebug --no-daemon --stacktrace
 
       - name: Collect APK
         run: |
