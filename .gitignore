@@ -1,7 +1,7 @@
 # Compiled Binaries
-cybercompanion
-cybercompanion.exe
-cybercompanion-*
+/cybercompanion
+/cybercompanion.exe
+/cybercompanion-*
 dist/
 build/
 *.so
