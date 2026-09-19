@@ -129,7 +129,8 @@ jobs:
           SUFFIX=""
           if [ "${{ matrix.goos }}" = "windows" ]; then SUFFIX=".exe"; fi
           OUT="cybercompanion-${{ matrix.goos }}-${{ matrix.goarch }}${SUFFIX}"
-          go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_SHA::8}" \
+          go build -trimpath \
+            -ldflags="-s -w -X main.version=${GITHUB_SHA::8} -X main.commit=${GITHUB_SHA::8}" \
             -o "build/$OUT" ./cmd/cybercompanion
           ls -lh "build/$OUT"
           echo "BUILT=$OUT" >> $GITHUB_ENV
@@ -137,7 +138,20 @@ jobs:
       - name: 冒烟测试（仅本机架构可执行）
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
-          ./build/cybercompanion-linux-amd64 -version
+          set -e
+          BIN=./build/cybercompanion-linux-amd64
+          echo "--- -version ---"
+          $BIN -version
+          echo "--- -V（单行）---"
+          $BIN -V
+          # 断言版本号确实被 ldflags 注入，而不是打出一个空值或报错
+          # （此前 -version 参数根本不存在，进程报错后仍以 0 退出，校验形同虚设）
+          if ! $BIN -V | grep -q "${GITHUB_SHA::8}"; then
+            echo "::error::-V 输出中未包含注入的提交号 ${GITHUB_SHA::8}"
+            $BIN -V
+            exit 1
+          fi
+          echo "✅ 版本注入校验通过"
 
       - name: 硬件采集冒烟测试（验证详细硬件信息在真实环境下可采集）
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'

@@ -26,16 +26,39 @@ const Banner = `
  | |__| |_| | |_) |  __/ |    | |__| (_) | | | | | | |_) | (_| | | | | | (_) | | | |
   \____\__, |_.__/ \___|_|     \____\___/|_| |_| |_| .__/ \__,_|_| |_|_|\___/|_| |_|
        |___/                                       |_|                              
-  >> 边缘硬件与随身 WiFi 多模态 AI 伴侣 · 开源版 v1.0.0
 ========================================================================
 `
+
+// printBanner 打印启动横幅。
+// 版本号改为运行时注入，避免每次发版都要手改这个字符串常量
+// （此前硬编码 v1.0.0，与注入的 main.version 长期不一致）。
+func printBanner() {
+	fmt.Print(Banner)
+	fmt.Printf("  >> 边缘硬件与随身 WiFi 多模态 AI 伴侣 · 开源版 %s\n", resolveVersionString())
+	fmt.Println("  >> 使用 -version 查看完整版本信息，-hardware 查看本机硬件详情")
+	fmt.Println()
+}
 
 func main() {
 	configFile := flag.String("config", "config.json", "配置文件路径")
 	webPort := flag.Int("port", 0, "嵌入式 Web 控制台端口 (默认使用配置中的端口或 8088)")
 	showHardware := flag.Bool("hardware", false, "打印本机详细硬件信息后退出")
 	showHardwareJSON := flag.Bool("hardware-json", false, "以 JSON 格式打印本机详细硬件信息后退出")
+	showVersion := flag.Bool("version", false, "打印版本信息后退出")
+	showVersionShort := flag.Bool("V", false, "打印单行版本信息后退出（便于脚本消费）")
 	flag.Parse()
+
+	// 版本查询必须走 os.Exit(0)，不能 return —— 之前 CI 里的冒烟测试
+	// 执行 `-version` 时因为该参数未定义而报错，但进程仍以 0 退出，
+	// 导致校验形同虚设。现在参数真实存在，且用退出码表达结果。
+	if *showVersion {
+		fmt.Println(verboseVersion())
+		os.Exit(0)
+	}
+	if *showVersionShort {
+		fmt.Println(buildInfoLine())
+		os.Exit(0)
+	}
 
 	// 硬件信息自检模式：任何平台的设备都能用同一条命令看到完整采集结果，
 	// 便于插上小主机/随身 WiFi 后确认识别情况，无需先启动机器人和面板。
@@ -46,7 +69,7 @@ func main() {
 		return
 	}
 
-	fmt.Print(Banner)
+	printBanner()
 
 	// 1. Load or initialize configuration
 	cfg, err := config.LoadConfig(*configFile)

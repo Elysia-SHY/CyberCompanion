@@ -264,7 +264,8 @@ git clone https://github.com/Elysia-SHY/CyberCompanion.git
 cd CyberCompanion
 
 # 编译当前平台（带版本号注入）
-go build -ldflags "-X main.version=v1.1.0" -o cybercompanion ./cmd/cybercompanion
+go build -ldflags "-X main.version=v1.1.0 -X main.commit=$(git rev-parse --short HEAD)" \
+  -o cybercompanion ./cmd/cybercompanion
 
 # 交叉编译 macOS Apple Silicon
 GOOS=darwin GOARCH=arm64 go build -o cybercompanion-darwin-arm64 ./cmd/cybercompanion
@@ -282,7 +283,11 @@ GOOS=windows GOARCH=amd64 go build -o cybercompanion-windows-amd64.exe ./cmd/cyb
 查看版本：
 
 ```bash
-./cybercompanion -version
+./cybercompanion -version    # 多行详情：版本、提交、构建时间、平台、Go 版本
+./cybercompanion -V          # 单行摘要，便于脚本 grep
+
+# 示例输出
+# cybercompanion v1.1.0 (2953f325) linux/amd64 built 2026-09-19T20:17:10Z
 ```
 
 ### 硬件信息自检

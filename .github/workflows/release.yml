@@ -59,7 +59,26 @@ jobs:
           GOARM: ${{ matrix.goarm }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags="-s -w" -o build/${{ matrix.output_name }} ./cmd/cybercompanion
+          # 版本号取自 tag（v1.1.0 这种）；workflow_dispatch 手动触发时退化为短 SHA。
+          # 之前这里只传了 -s -w，没有 -X main.version，
+          # 导致发行版二进制里 version 恒为空，-version 也无法输出。
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-${GITHUB_SHA::8}"
+          fi
+          echo "构建版本: $VERSION"
+          go build -trimpath \
+            -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA::8} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o build/${{ matrix.output_name }} ./cmd/cybercompanion
+          # 冒烟测试：确认版本号真的被注入进去了
+          if [[ "${{ matrix.goos }}" == "linux" && "${{ matrix.goarch }}" == "amd64" ]]; then
+            ./build/${{ matrix.output_name }} -version
+            ./build/${{ matrix.output_name }} -V | grep -q "$VERSION" || {
+              echo "::error::版本号注入失败，期望包含 $VERSION"
+              exit 1
+            }
+          fi
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
@@ -108,13 +127,20 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p build/
-          find android/app/build/outputs/apk/ -name "*.apk" -exec cp {} build/CyberCompanion-Android-v1.0.0.apk \;
+          # APK 名跟随 tag，不再硬编码 v1.0.0
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-${GITHUB_SHA::8}"
+          fi
+          find android/app/build/outputs/apk/ -name "*.apk" -exec cp {} "build/CyberCompanion-Android-${VERSION}.apk" \;
+          ls -lh build/
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: CyberCompanion-Android.apk
-          path: build/CyberCompanion-Android-v1.0.0.apk
+          path: build/CyberCompanion-Android-*.apk
 
   release:
     name: Create GitHub Release
