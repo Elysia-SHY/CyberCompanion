@@ -40,6 +40,13 @@ public class BotService extends Service {
     private volatile boolean autoRestart = true;
     private int restartCount = 0;
 
+    // ── 设备快照刷新 ──────────────────────────────────────────────────────
+    // Go 核心跑在应用沙箱里，读不到 /proc/net、/sys/class/power_supply 这些路径，
+    // 硬件面板会大面积显示「未提供」。改由这里用框架 API 采集后写成 JSON 交给核心。
+    // 电池、流量、网络类型都会随时间变化，所以服务存活期间定期重写。
+    private volatile boolean snapshotRefresh = true;
+    private Thread snapshotThread;
+
     public static boolean isServiceRunning() {
         return isRunning;
     }
@@ -52,6 +59,34 @@ public class BotService extends Service {
     public void onCreate() {
         super.onCreate();
         createNotificationChannel();
+        startSnapshotRefresher();
+    }
+
+    /**
+     * 启动设备快照的定时刷新线程。
+     * 十五秒一次的写量是几百字节，对续航的影响可以忽略。
+     */
+    private void startSnapshotRefresher() {
+        if (snapshotThread != null) {
+            return;
+        }
+        snapshotThread = new Thread(() -> {
+            File dest = new File(getFilesDir(), DeviceProbe.SNAPSHOT_FILE);
+            while (snapshotRefresh) {
+                try {
+                    Thread.sleep(DeviceProbe.REFRESH_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                if (!snapshotRefresh) {
+                    return;
+                }
+                DeviceProbe.writeSnapshot(getApplicationContext(), dest);
+            }
+        }, "cybercompanion-device-probe");
+        snapshotThread.setDaemon(true);
+        snapshotThread.start();
     }
 
     @Override
@@ -136,6 +171,15 @@ public class BotService extends Service {
                 statusMessage = "正在启动服务进程...";
                 Log.i(TAG, "Launching binary: " + binaryFile.getAbsolutePath() + " -config " + configFile.getAbsolutePath());
 
+                // 用框架 API 采一份设备快照，并把路径透给核心。
+                // 核心优先采用快照值：安卓 10 之后 /proc、/sys 对应用几乎全关，
+                // 不这么做面板上大半栏目只能显示「未提供」。
+                File snapshotFile = new File(filesDir, DeviceProbe.SNAPSHOT_FILE);
+                boolean snapshotReady = DeviceProbe.writeSnapshot(getApplicationContext(), snapshotFile);
+                if (!snapshotReady) {
+                    Log.w(TAG, "设备快照写入失败，核心将退回 /proc、/sys 直读");
+                }
+
                 ProcessBuilder pb = new ProcessBuilder(
                         binaryFile.getAbsolutePath(),
                         "-config", configFile.getAbsolutePath(),
@@ -145,6 +189,9 @@ public class BotService extends Service {
                 pb.environment().put("HOME", filesDir.getAbsolutePath());
                 pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
                 pb.environment().put("PATH", System.getenv("PATH") + ":" + filesDir.getAbsolutePath());
+                if (snapshotReady) {
+                    pb.environment().put(DeviceProbe.SNAPSHOT_ENV, snapshotFile.getAbsolutePath());
+                }
                 // 把宿主的版本号透给核心：核心 .so 由 Gradle 顺带编译，
                 // 拿不到 release.yml 里从 tag 注入的 -X main.version，
                 // 否则面板侧栏会显示成 vdev。取不到时留空，核心自行回退。
@@ -375,6 +422,11 @@ public class BotService extends Service {
     public void onDestroy() {
         // 服务被系统或用户销毁时停止自动重启，避免"杀不掉"的副作用
         autoRestart = false;
+        snapshotRefresh = false;
+        if (snapshotThread != null) {
+            snapshotThread.interrupt();
+            snapshotThread = null;
+        }
         if (botProcess != null) {
             botProcess.destroy();
         }

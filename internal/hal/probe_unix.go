@@ -65,11 +65,18 @@ func readProcStat() (idle, total uint64, ok bool) {
 }
 
 // SampleCPU 计算两次采样之间的 CPU 占用率（0-100）。
-// 首次调用没有历史基线，返回 0 并记录快照；调用方应在启动后预热一次。
+//
+// 返回值 **-1 表示「未知」**，具体分三种情况：
+//   - /proc/stat 读不到（安卓 10+ 沙箱、被 SELinux 拦截的容器）；
+//   - 还没有第二次采样，没有可用的差值基线；
+//   - 计数器回绕 / 进程重启导致读到更小的值，样本无效。
+//
+// 之所以不沿用原来的「失败返回 0」，是因为 0% 与「读不到」在面板上
+// 是完全不同的两件事，前者是真实读数，后者必须显示「未提供」。
 func SampleCPU() float64 {
 	idle, total, ok := readProcStat()
 	if !ok {
-		return 0
+		return -1
 	}
 	now := time.Now()
 
@@ -80,16 +87,16 @@ func SampleCPU() float64 {
 	lastCPUSnap = &cpuSnapshot{idle: idle, total: total, at: now}
 
 	if prev == nil {
-		return 0
+		return -1
 	}
 	// 计数器回绕或进程重启后读到更小的值，视为无效样本
 	if total <= prev.total || idle < prev.idle {
-		return 0
+		return -1
 	}
 	totalDelta := total - prev.total
 	idleDelta := idle - prev.idle
 	if totalDelta == 0 {
-		return 0
+		return -1
 	}
 	usage := float64(totalDelta-idleDelta) / float64(totalDelta) * 100
 	if usage < 0 {

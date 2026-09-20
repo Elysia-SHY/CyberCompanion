@@ -32,6 +32,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -65,12 +66,9 @@ public class MainActivity extends AppCompatActivity {
             });
         }
 
-        // Request notification permission on Android 13+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
-            }
-        }
+        // 首次启动一次性申请所需运行时权限。用户拒绝不影响主流程，
+        // 只是硬件面板上会少一到两项数据。
+        requestRuntimePermissions();
 
         // 申请电池优化白名单：国产 ROM 会在息屏数分钟后强杀后台服务，
         // 不在白名单里时"24 小时在线"无法实现（优化建议书 7.1 ①）。
@@ -84,6 +82,37 @@ public class MainActivity extends AppCompatActivity {
 
         // 3. Poll and Load
         checkAndLoad();
+    }
+
+    /**
+     * 申请运行时权限。
+     *
+     * <ul>
+     *   <li>POST_NOTIFICATIONS（Android 13+）：前台服务常驻通知，没它服务会被系统降级；</li>
+     *   <li>READ_PHONE_STATE：蜂窝制式（5G NR / 4G LTE）与信号强度 dBm。
+     *       安卓把这些数据列为受保护字段，没有该权限时只能显示"已连网"。</li>
+     * </ul>
+     */
+    private void requestRuntimePermissions() {
+        List<String> wanted = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            wanted.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                != PackageManager.PERMISSION_GRANTED) {
+            wanted.add(Manifest.permission.READ_PHONE_STATE);
+        }
+        if (wanted.isEmpty()) {
+            return;
+        }
+        try {
+            requestPermissions(wanted.toArray(new String[0]), 101);
+        } catch (Throwable e) {
+            // 无电话模块的设备上申请该权限可能直接抛异常，忽略即可
+            Log.w(TAG, "申请运行时权限失败: " + e.getMessage());
+        }
     }
 
     /**

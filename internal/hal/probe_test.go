@@ -156,12 +156,12 @@ func TestParseMilliCelsius(t *testing.T) {
 	}
 }
 
-// TestSampleCPUIsBounded 验证 CPU 占用率始终落在 0-100。
+// TestSampleCPUIsBounded 验证 CPU 占用率要么落在 0-100，要么是 -1（未知）。
 // 差值采样在计数器回绕、容器迁移等场景下可能算出异常值，必须有钳制。
 func TestSampleCPUIsBounded(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		v := platformCPUUsage()
-		if v < 0 || v > 100 {
+		if v < -1 || v > 100 {
 			t.Fatalf("CPU 占用率越界: %v", v)
 		}
 	}

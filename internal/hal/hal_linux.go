@@ -14,8 +14,16 @@ func init() {
 }
 
 func (d *LinuxDriver) Name() string {
-	return "Linux Standard / Raspberry Pi (" + runtime.GOARCH + ")"
+	if runtime.GOOS == "android" {
+		// 正常情况下安卓设备会命中 AndroidDriver（优先级更高）。
+		// 走到这里说明 Java 壳没写快照，如实说明，不要谎称是树莓派。
+		return "Android（未获取到设备快照，" + runtime.GOARCH + "）"
+	}
+	return "Linux (" + runtime.GOARCH + ")"
 }
+
+// Priority 高于兜底驱动、低于 AndroidDriver 与各家定制固件驱动。
+func (d *LinuxDriver) Priority() int { return 10 }
 
 func (d *LinuxDriver) Detect() bool {
 	return runtime.GOOS == "linux" || runtime.GOOS == "android"

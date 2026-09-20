@@ -72,6 +72,20 @@ type HardwareDriver interface {
 	ExecuteRootCmd(cmd string) (string, error)
 }
 
+// Prioritized 由具体驱动可选实现，用于在多个驱动同时 Detect() 成功时挑出最具体的那个。
+// 数值越大越优先；未实现该接口的驱动一律按 0 处理。
+type Prioritized interface {
+	Priority() int
+}
+
+// driverPriority 读取驱动的优先级，未实现 Prioritized 的驱动视为 0。
+func driverPriority(d HardwareDriver) int {
+	if p, ok := d.(Prioritized); ok {
+		return p.Priority()
+	}
+	return 0
+}
+
 var (
 	driversLock  sync.Mutex
 	drivers      []HardwareDriver
@@ -87,15 +101,23 @@ func RegisterDriver(d HardwareDriver) {
 	drivers = append(drivers, d)
 }
 
-// InitHAL detects the current hardware environment and selects best driver
+// InitHAL detects the current hardware environment and selects best driver.
+//
+// 选择规则是「Detect() 通过的驱动里优先级最高者胜」，而不是「先注册的先赢」。
+// 原实现是后者，而 GenericDriver 的 Detect() 恒为 true、又恰好按文件名顺序
+// （hal_generic.go 排在 hal_linux.go 之前）最先注册，于是 Linux / 树莓派 /
+// 安卓设备全都被兜底驱动截胡，面板上永远显示 "Universal Hardware Profile"。
 func InitHAL() HardwareDriver {
 	driversLock.Lock()
 
 	var chosen HardwareDriver
+	best := -1
 	for _, d := range drivers {
-		if d.Detect() {
-			chosen = d
-			break
+		if !d.Detect() {
+			continue
+		}
+		if p := driverPriority(d); p > best {
+			chosen, best = d, p
 		}
 	}
 	if chosen == nil {

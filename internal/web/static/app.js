@@ -327,13 +327,21 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // CPU 占用条
-      const cpuPct = Math.max(0, Math.min(100, Number(d.cpu_usage) || 0));
+      // cpu_usage 为 -1 表示「读不到 /proc/stat，或还没有第二次采样基线」，
+      // 这时显示「未提供」，而不是一个看着像真读数的 0.0%。
       const cpuFill = document.getElementById('cpu-fill');
       const cpuLabel = document.getElementById('cpu-label');
       if (cpuFill && cpuLabel) {
-        cpuFill.style.width = `${cpuPct}%`;
-        const cores = d.cpu_cores > 0 ? `${d.cpu_cores} 核 · ` : '';
-        cpuLabel.textContent = `${cores}${cpuPct.toFixed(1)}%`;
+        const rawCpu = Number(d.cpu_usage);
+        const cpuCores = d.cpu_cores > 0 ? `${d.cpu_cores} 核 · ` : '';
+        if (isFinite(rawCpu) && rawCpu >= 0) {
+          const cpuPct = Math.max(0, Math.min(100, rawCpu));
+          cpuFill.style.width = `${cpuPct}%`;
+          cpuLabel.textContent = `${cpuCores}${cpuPct.toFixed(1)}%`;
+        } else {
+          cpuFill.style.width = '0%';
+          cpuLabel.textContent = `${cpuCores}未提供`;
+        }
       }
 
       // Memory bar

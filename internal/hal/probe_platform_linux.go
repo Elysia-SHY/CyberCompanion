@@ -22,7 +22,8 @@ func platformCPUModel() string {
 }
 
 // platformCPUUsage 返回 CPU 占用率。
-// 首次调用因缺少基线返回 0，上层在启动时会预热一次采样。
+// -1 表示「未知」：/proc/stat 读不到，或还没有可用的差值基线。
+// 上层在启动时会预热一次采样，面板打开后通常会拿到真实读数。
 func platformCPUUsage() float64 {
 	return SampleCPU()
 }

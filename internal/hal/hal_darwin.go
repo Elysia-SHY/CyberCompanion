@@ -24,6 +24,9 @@ func (d *DarwinDriver) Detect() bool {
 	return runtime.GOOS == "darwin"
 }
 
+// Priority 高于兜底驱动。
+func (d *DarwinDriver) Priority() int { return 10 }
+
 // GetInfo 采集 macOS 宿主真实信息。
 // 改动要点：原实现把"已用内存"直接写成总内存的一半、温度写死 "SoC: 正常"、
 // CPU 占用恒为 0。现在内存用量来自 vm_stat（active + wired + compressed），

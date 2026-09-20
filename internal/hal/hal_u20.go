@@ -20,6 +20,9 @@ func (d *U20Driver) Name() string {
 	return "Flymodem U20 5G/4G (Unisoc ARM64)"
 }
 
+// Priority 高于通用 Linux 与 Qualcomm 驱动：U20 是特定整机型号，口径最具体。
+func (d *U20Driver) Priority() int { return 30 }
+
 func (d *U20Driver) Detect() bool {
 	if runtime.GOOS != "android" && runtime.GOOS != "linux" {
 		return false

@@ -2,6 +2,32 @@
 
 本项目遵循「能用 → 可靠 → 好用 → 可维护」的演进顺序。以下为优化建议书落地后的工程化改造记录。
 
+## v1.2.1 - 2026-09-20
+
+本版专治「安卓端硬件面板大部分都读不到」。
+
+根因是 Go 核心在 Android 上以应用沙箱子进程的身份运行，Android 10 之后 SELinux 把 `/proc/net/*`、`/proc/loadavg`、`/proc/uptime`、`/sys/class/net`、`/sys/class/thermal`、`/sys/class/power_supply` 这些路径对普通应用全部关掉了，于是面板上大半栏目只能显示「未提供」，连设备类型都会退化成兜底驱动的 `Universal Hardware Profile`。
+
+### 修复
+
+- **安卓硬件采集改由框架层供给**：新增 `DeviceProbe`，用 `Build` / `ActivityManager.MemoryInfo` / `StatFs` / `BatteryManager` / `PowerManager` / `ConnectivityManager` / `TelephonyManager` / `TrafficStats` / `SystemClock` 采集设备型号、SoC、核心数、内存、存储、开机时长、内核、电池、散热、网络类型、运营商、信号强度、本机地址与累计流量，写成 JSON 快照交给核心子进程（环境变量 `CYBERCOMPANION_DEVICE_INFO`）。核心侧新增快照解析层，采集时优先采用快照值，快照里没有的再退回 `/proc`、`/sys` 直读。
+- **驱动选择由「先到先得」改为「优先级最高者胜」**：`GenericDriver.Detect()` 恒为真，而 `hal_generic.go` 按文件名顺序又排在 `hal_linux.go` 之前，导致 Linux、树莓派、安卓设备全被兜底驱动截胡，面板上永远显示 `Universal Hardware Profile`。现在各驱动带优先级，`AndroidDriver` 以「快照是否存在」判定，因为 CI 里 armeabi-v7a 与 x86_64 两个 ABI 是用 `GOOS=linux` 编的，按 `runtime.GOOS` 判断会漏掉它们。
+- **去掉「树莓派」误标**：`LinuxDriver.Name()` 此前在所有 Linux 系设备上一律返回 `Linux Standard / Raspberry Pi (arch)`，安卓设备也被冠上树莓派的名字。现在按实际平台区分，拿不到快照时如实标注。
+- **CPU 占用率区分「确实是 0%」与「读不到」**：`SampleCPU()` 在采集失败、缺少采样基线、计数器回绕这三种情况下由返回 `0` 改为返回 `-1`，面板显示「未提供」，不再拿一个看着像真读数的 `0.0%` 充数。
+- **安卓内存与存储改用正确口径**：内存不再依赖 `/proc/meminfo` 里内核估算的 `MemAvailable`，改用 `ActivityManager.MemoryInfo`，与系统设置里看到的数字对得上；存储不再读只读的 system 分区，改看数据分区。
+- **安卓进程数不再显示假数据**：沙箱里的 `/proc` 只暴露本应用自己的进程，直接数出来是个没有意义的 1~2。现在这种情况按「未提供」上报。
+- **缺失项清单改中文**：`unavailable` 从 `cpu_model`、`memory` 这类内部字段名改为「处理器型号」「内存」等面板文案，用户可以直接读。
+
+### Android
+
+- **新增 `READ_PHONE_STATE` 运行时权限**：用于读取蜂窝制式（5G NR / 4G LTE）与信号强度 dBm。这些字段被安卓列为受保护项，没有权限只能显示「已连网」。用户拒绝不影响主流程，面板上会明确写出原因。
+- **首次启动只弹一轮权限对话框**：通知权限与电话权限合并为一次申请。
+- **快照定时刷新**：电池、流量、网络类型会随时间变化，服务存活期间每 15 秒重写一次快照；服务销毁时停掉刷新线程。
+
+### 说明
+
+- 非 root 的 Android 上，普通应用仍然拿不到 SoC 温度、平均负载、调频策略与当前主频（`/proc/loadavg` 与 cpufreq 目录被 SELinux 关闭）。这些项会如实列进面板的「本平台未提供」，不再回退成看起来像真的假值。
+
 ## v1.2.0 - 2026-09-20
 
 本版合并了两批工作：按《优化建议书》落地的工程化改造（阶段 1/2/3），以及首次使用体验的修正。最直观的变化是 Android 端不再打开就要密码、面板内可以直接看更新日志。

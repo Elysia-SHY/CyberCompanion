@@ -18,6 +18,9 @@ func (d *QcomDriver) Name() string {
 	return "Qualcomm Snapdragon 410/210 (MSM8916/MSM8909)"
 }
 
+// Priority 高于通用 Linux 驱动：能识别出具体 SoC 时就用更具体的采集口径。
+func (d *QcomDriver) Priority() int { return 20 }
+
 func (d *QcomDriver) Detect() bool {
 	if runtime.GOOS != "linux" && runtime.GOOS != "android" {
 		return false

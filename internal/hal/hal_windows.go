@@ -21,6 +21,9 @@ func (d *WindowsDriver) Detect() bool {
 	return runtime.GOOS == "windows"
 }
 
+// Priority 高于兜底驱动。
+func (d *WindowsDriver) Priority() int { return 10 }
+
 // GetInfo 采集 Windows 宿主真实信息。
 // 改动要点：原实现把内存写死为 4096/16384 MB、温度写死 "Core: 优"、
 // 信号写死 "满格 (千兆局域网)"，无论实际硬件如何都返回同样的数字。
