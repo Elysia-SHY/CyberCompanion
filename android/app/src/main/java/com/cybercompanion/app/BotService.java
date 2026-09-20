@@ -145,6 +145,13 @@ public class BotService extends Service {
                 pb.environment().put("HOME", filesDir.getAbsolutePath());
                 pb.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
                 pb.environment().put("PATH", System.getenv("PATH") + ":" + filesDir.getAbsolutePath());
+                // 把宿主的版本号透给核心：核心 .so 由 Gradle 顺带编译，
+                // 拿不到 release.yml 里从 tag 注入的 -X main.version，
+                // 否则面板侧栏会显示成 vdev。取不到时留空，核心自行回退。
+                String appVersion = appVersionName();
+                if (!appVersion.isEmpty()) {
+                    pb.environment().put("CYBERCOMPANION_VERSION", "v" + appVersion);
+                }
                 pb.redirectErrorStream(true);
 
                 botProcess = pb.start();
@@ -181,6 +188,19 @@ public class BotService extends Service {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
+        }
+    }
+
+    /**
+     * 读取本应用的 versionName（对应 android/app/build.gradle 里的版本号）。
+     * 取不到时返回空串，调用方跳过注入，由核心自行回退到 dev。
+     */
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            Log.w(TAG, "读取应用版本号失败: " + e.getMessage());
+            return "";
         }
     }
 

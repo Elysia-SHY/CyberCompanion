@@ -1,12 +1,13 @@
 package main
 
 import (
+	"os"
 	"runtime"
 	"runtime/debug"
 )
 
 // version 由构建时通过 -ldflags "-X main.version=..." 注入。
-// 未注入时保留默认值，resolveVersion 会尝试从 Go 构建信息里补一个可读的标识，
+// 未注入时依次回退到：环境变量 CYBERCOMPANION_VERSION、Go 构建信息、字面量 dev，
 // 避免出现"版本号是空的"这种情况。
 var (
 	version = ""
@@ -14,10 +15,24 @@ var (
 	date    = ""
 )
 
+// versionEnvKey 是宿主（Android 壳）通过环境变量告知核心版本号的键。
+//
+// 为什么需要它：Android 的 APK 里，核心 .so 由 Gradle 构建流程顺带编译，
+// 走不到 release.yml 里那套从 tag 推导 VERSION 再 -ldflags 注入的逻辑，
+// 于是核心只能自报 dev，面板侧栏就会显示成 vdev。
+// 壳进程读取自身的 versionName 传进来，即可与 tag 对齐，且不需要改动 CI 工作流。
+const versionEnvKey = "CYBERCOMPANION_VERSION"
+
 // resolveVersion 返回用于展示的版本信息。
-// 优先级：ldflags 注入 > 模块构建信息里的 VCS 修订 > 兜底 dev。
+// 优先级：ldflags 注入 > 宿主环境变量 > 模块构建信息里的版本 > 兜底 dev。
 func resolveVersion() (ver, com, buildDate string) {
 	ver, com, buildDate = version, commit, date
+
+	if ver == "" {
+		if v := os.Getenv(versionEnvKey); v != "" {
+			ver = v
+		}
+	}
 
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, s := range info.Settings {
