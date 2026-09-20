@@ -39,13 +39,13 @@ const (
 
 // outboundMsg 描述一条待发送的出站消息。
 type outboundMsg struct {
-	Target    string                    // 私聊为 user openid，群聊为 member openid
-	Group     string                    // 群 openid，私聊时为空
-	Content   string                    // 文本内容
-	MsgID     string                    // 被动回复时的引用消息 ID
-	Sticker   *stickers.SendPayload     // 非空时走媒体通道
-	Attempts  int                       // 已尝试次数
-	notBefore time.Time                 // 退避到期时间
+	Target    string                // 私聊为 user openid，群聊为 member openid
+	Group     string                // 群 openid，私聊时为空
+	Content   string                // 文本内容
+	MsgID     string                // 被动回复时的引用消息 ID
+	Sticker   *stickers.SendPayload // 非空时走媒体通道
+	Attempts  int                   // 已尝试次数
+	notBefore time.Time             // 退避到期时间
 }
 
 var (

@@ -228,8 +228,8 @@ func (s *Server) handleStickerUpload(w http.ResponseWriter, r *http.Request) {
 
 	s.log("[Stickers] 批量上传 %d 张（成功 %d）", len(files), len(created))
 	writeJSON(w, map[string]interface{}{
-		"created":  created,
-		"warnings": warnings,
+		"created":   created,
+		"warnings":  warnings,
 		"hostReady": stickers.ImageHostStatusNow().Ready,
 	})
 }

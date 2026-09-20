@@ -33,15 +33,15 @@ import (
 
 // 鉴权方式
 const (
-	AuthNone     = "none"     // 不带鉴权（公开图床 / 预签名 URL）
-	AuthBearer   = "bearer"   // Authorization: Bearer <token>
-	AuthRaw      = "raw"      // <AuthHeader>: <token>，如 sm.ms 直接给 token
-	AuthFormField = "form"    // 把 token 作为一个表单字段
+	AuthNone      = "none"   // 不带鉴权（公开图床 / 预签名 URL）
+	AuthBearer    = "bearer" // Authorization: Bearer <token>
+	AuthRaw       = "raw"    // <AuthHeader>: <token>，如 sm.ms 直接给 token
+	AuthFormField = "form"   // 把 token 作为一个表单字段
 )
 
 // Config 是图床配置。零值不可用，调用方应先过一遍 Normalize。
 type Config struct {
-	Provider string `json:"provider"` // none | custom，仅用于前端展示与预设
+	Provider  string `json:"provider"` // none | custom，仅用于前端展示与预设
 	UploadURL string `json:"upload_url"`
 	Method    string `json:"method"` // POST（multipart）| PUT（原始字节流）
 

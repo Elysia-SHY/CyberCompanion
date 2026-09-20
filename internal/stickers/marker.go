@@ -68,7 +68,7 @@ func ParseMarkers(reply string) (string, []string) {
 	}
 
 	var (
-		out strings.Builder
+		out  strings.Builder
 		keys []string
 		seen = map[string]bool{}
 	)
