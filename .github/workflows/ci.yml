@@ -54,6 +54,17 @@ jobs:
           fi
           echo "✅ 依赖文件一致"
 
+      - name: CHANGELOG 副本一致性校验
+        run: |
+          # 面板里的「更新日志」读的是构建期内嵌的 static/CHANGELOG.md，
+          # 忘记同步时用户会看到过时的内容，因此在 CI 里强制校验。
+          if ! cmp -s CHANGELOG.md internal/web/static/CHANGELOG.md; then
+            echo "::error::internal/web/static/CHANGELOG.md 与根目录不一致，请运行 scripts/sync-changelog.sh"
+            diff -u CHANGELOG.md internal/web/static/CHANGELOG.md || true
+            exit 1
+          fi
+          echo "✅ 更新日志副本一致"
+
       - name: go vet
         run: go vet ./...
 
