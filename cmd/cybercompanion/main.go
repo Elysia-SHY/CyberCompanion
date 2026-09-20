@@ -51,6 +51,28 @@ func printBanner() {
 	fmt.Println()
 }
 
+func init() {
+	// 在 Android / 嵌入式 Linux 系统中（如随身 WiFi、开发板），缺少常规 /etc/ssl/certs 证书包，
+	// 导致 Go 原生 TLS 无法校验证书。检测常见 CA 证书路径并自动配置 SSL_CERT_FILE / SSL_CERT_DIR。
+	if os.Getenv("SSL_CERT_FILE") == "" {
+		for _, p := range []string{
+			"/data/qq-bot/cacert.pem",
+			"/etc/ssl/certs/ca-certificates.crt",
+			"/system/etc/security/cacert.pem",
+		} {
+			if _, err := os.Stat(p); err == nil {
+				_ = os.Setenv("SSL_CERT_FILE", p)
+				break
+			}
+		}
+	}
+	if os.Getenv("SSL_CERT_DIR") == "" {
+		if fi, err := os.Stat("/system/etc/security/cacerts"); err == nil && fi.IsDir() {
+			_ = os.Setenv("SSL_CERT_DIR", "/system/etc/security/cacerts")
+		}
+	}
+}
+
 func main() {
 	configFile := flag.String("config", "config.json", "配置文件路径")
 	webPort := flag.Int("port", 0, "嵌入式 Web 控制台端口 (默认使用配置中的端口或 8088)")
