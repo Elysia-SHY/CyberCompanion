@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -30,8 +31,11 @@ func TestWriteFileAtomic_CreatesValidFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("权限应为 0600，实际 %o", perm)
+	// Windows 没有 POSIX 权限位（Stat 恒为 0666），该断言只在类 Unix 上成立
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("权限应为 0600，实际 %o", perm)
+		}
 	}
 }
 
@@ -171,8 +175,8 @@ func TestNormalize_FillsSecurityDefaults(t *testing.T) {
 	if cfg.Passcode != "" {
 		t.Errorf("历史默认口令应被清空，实际 %q", cfg.Passcode)
 	}
-	if cfg.WebPassword == "" {
-		t.Error("WebPassword 应被自动生成")
+	if cfg.WebPassword != "" {
+		t.Errorf("WebPassword 应保持为空，交由面板首次引导创建")
 	}
 	if cfg.WebPort != 8088 {
 		t.Errorf("端口应回退到 8088，实际 %d", cfg.WebPort)
@@ -298,16 +302,18 @@ func TestLoadConfig_CreatesFileWithTightPerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("首次加载失败: %v", err)
 	}
-	if cfg.WebPassword == "" {
-		t.Error("首次创建时应自动生成管理密码")
+	if cfg.WebPassword != "" {
+		t.Error("首次创建时不应自动生成密码，应留给面板引导用户创建")
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("新建配置权限应为 0600，实际 %o", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("新建配置权限应为 0600，实际 %o", perm)
+		}
 	}
 }
 
@@ -326,7 +332,47 @@ func TestLoadConfig_TightensLoosePerms(t *testing.T) {
 	}
 
 	info, _ := os.Stat(path)
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("过宽的权限应被自动收紧到 0600，实际 %o", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("过宽的权限应被自动收紧到 0600，实际 %o", perm)
+		}
+	}
+}
+
+func TestValidateWebPassword(t *testing.T) {
+	cases := []struct {
+		name string
+		pwd  string
+		ok   bool
+	}{
+		{"正常长度", "abcd1234", true},
+		{"过短", "abc123", false},
+		{"空密码", "", false},
+		{"首尾空格", " abcd1234 ", false},
+		{"超长", string(make([]byte, 200)), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			msg := ValidateWebPassword(c.pwd)
+			if c.ok && msg != "" {
+				t.Errorf("应通过校验，实际被拒: %s", msg)
+			}
+			if !c.ok && msg == "" {
+				t.Error("应被拒绝，实际通过")
+			}
+		})
+	}
+}
+
+func TestValidate_ReportsMissingPanelPassword(t *testing.T) {
+	cfg := DefaultConfig()
+	var found bool
+	for _, issue := range cfg.Validate() {
+		if issue == "面板密码尚未创建，首次打开控制台时会引导设置" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("未设置面板密码时，Validate 应提示首次引导，而不是笼统地说密码过短")
 	}
 }

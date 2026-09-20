@@ -181,7 +181,8 @@ if [ ! -f "config.json" ]; then
   "token_budget": 6000,
   "enable_stickers": true,
   "enable_exec": false,
-  "exec_whitelist": []
+  "exec_whitelist": [],
+  "stream_reply": true
 }
 EOF
     chmod 600 config.json
@@ -213,23 +214,65 @@ else
         cat << EOF | sudo tee /etc/systemd/system/cybercompanion.service > /dev/null
 [Unit]
 Description=CyberCompanion AI Bot Service
-After=network.target
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$INSTALL_DIR/$BIN_NAME -config $INSTALL_DIR/config.json
+
+# 重启策略：崩溃自动拉起，但频繁崩溃时不再无限重启（防止疯狂刷日志）
 Restart=always
 RestartSec=5
-# 基础加固：禁止提权、限制可写路径
-NoNewPrivileges=true
-ProtectSystem=full
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# ── 权限收敛：以专用非特权用户运行 ──
+User=cybercompanion
+Group=cybercompanion
+
+# ── 文件系统沙箱：全盘只读，仅工作目录可写 ──
+ProtectSystem=strict
+ReadWritePaths=$INSTALL_DIR
+ProtectHome=true
 PrivateTmp=true
+
+# ── 内核与设备：禁止提权、禁止触碰内核与设备节点 ──
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+
+# 能力集：默认不授予任何特权能力。
+# 若确需通过机器人执行 reboot，取消下面两行注释即可精确授予该能力。
+#AmbientCapabilities=CAP_SYS_BOOT
+#CapabilityBoundingSet=CAP_SYS_BOOT
+
+# ── 资源上限：边缘设备内存有限，避免单进程吃满 ──
+MemoryMax=256M
+CPUQuota=70%
+TasksMax=64
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cybercompanion
 
 [Install]
 WantedBy=multi-user.target
 EOF
+        # 专用非特权用户：机器人不需要 root，沙箱化后即使被滥用也拿不到完整 shell
+        if ! id -u cybercompanion >/dev/null 2>&1; then
+            echo "👤 创建专用运行账户 cybercompanion..."
+            sudo useradd --system --no-create-home --shell /usr/sbin/nologin cybercompanion || true
+        fi
+        # 工作目录需可写（config.json / owners.json / sessions.json / 日志都在这里）
+        sudo chown -R cybercompanion:cybercompanion "$INSTALL_DIR"
+        sudo chmod 700 "$INSTALL_DIR"
+        sudo chmod 600 "$INSTALL_DIR/config.json" 2>/dev/null || true
+
         sudo systemctl daemon-reload
         sudo systemctl enable cybercompanion
         sudo systemctl restart cybercompanion

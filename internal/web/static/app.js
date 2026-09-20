@@ -62,62 +62,113 @@ document.addEventListener('DOMContentLoaded', () => {
     return m ? decodeURIComponent(m[1]) : '';
   }
 
-  function showLoginOverlay(message) {
-    let el = document.getElementById('cc-login-overlay');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'cc-login-overlay';
-      el.innerHTML = `
-        <div class="cc-login-card">
-          <div class="cc-login-title">CyberCompanion</div>
-          <div class="cc-login-sub">请输入面板管理密码</div>
-          <input type="password" id="cc-login-input" placeholder="管理密码" autocomplete="current-password">
-          <button id="cc-login-btn">登录</button>
-          <div class="cc-login-err" id="cc-login-err"></div>
-          <div class="cc-login-hint">密码见 config.json 的 web_password 字段</div>
-        </div>`;
-      document.body.appendChild(el);
+  // ── 认证引导 ────────────────────────────────────────────────
+  // 首次运行（面板密码尚未创建）时显示「创建密码」而不是「请输入密码」。
+  //
+  // 服务端不再在后台自动生成一串随机密码写进 config.json：在没有终端的设备上
+  // （Android / 随身 WiFi）用户根本看不到那个文件，只能面对一个答不对的登录框。
+  let authMode = 'login'; // 'login' | 'setup'
 
-      const submit = async () => {
-        const input = document.getElementById('cc-login-input');
-        const errEl = document.getElementById('cc-login-err');
-        const btn = document.getElementById('cc-login-btn');
-        const pwd = input.value;
-        if (!pwd) return;
-        btn.disabled = true;
-        errEl.textContent = '';
-        try {
-          const r = await _rawFetch('/api/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: pwd })
-          });
-          if (r.ok) {
-            el.remove();
-            location.reload();
-          } else {
-            let msg = '登录失败';
-            try { msg = (await r.json()).error || msg; } catch (e) {}
-            errEl.textContent = msg;
-          }
-        } catch (e) {
-          errEl.textContent = '网络错误: ' + e.message;
+  async function detectAuthMode() {
+    try {
+      const r = await _rawFetch('/api/auth-status');
+      if (r.ok) {
+        const d = await r.json();
+        authMode = d.setup_required ? 'setup' : 'login';
+      }
+    } catch (e) {
+      // 拿不到状态就按登录处理，保持原有行为
+      authMode = 'login';
+    }
+  }
+
+  async function showLoginOverlay(message) {
+    // 已经弹出且模式未变时只更新提示，避免轮询每 3 秒重建一次输入框
+    const existing = document.getElementById('cc-login-overlay');
+    if (existing && existing.dataset.mode === authMode) {
+      existing.style.display = 'flex';
+      const errEl = document.getElementById('cc-login-err');
+      if (errEl && message) errEl.textContent = message;
+      return;
+    }
+    if (existing) existing.remove();
+    await detectAuthMode();
+    renderAuthOverlay(message);
+  }
+
+  function renderAuthOverlay(message) {
+    const isSetup = authMode === 'setup';
+    const el = document.createElement('div');
+    el.id = 'cc-login-overlay';
+    el.dataset.mode = authMode;
+    el.innerHTML = `
+      <div class="cc-login-card">
+        <div class="cc-login-title">CyberCompanion</div>
+        <div class="cc-login-sub">${isSetup ? '首次使用，请先创建面板密码' : '请输入面板管理密码'}</div>
+        ${isSetup ? '<input type="password" id="cc-setup-input" placeholder="新密码（至少 8 位）" autocomplete="new-password">' : ''}
+        ${isSetup ? '<input type="password" id="cc-setup-confirm" placeholder="再输入一次" autocomplete="new-password">' : ''}
+        ${isSetup ? '' : '<input type="password" id="cc-login-input" placeholder="管理密码" autocomplete="current-password">'}
+        <button id="cc-login-btn">${isSetup ? '创建并进入面板' : '登录'}</button>
+        <div class="cc-login-err" id="cc-login-err"></div>
+        <div class="cc-login-hint">${isSetup
+          ? '密码保存在本机配置中，用于登录这个控制台'
+          : '忘记密码：删除配置文件中的 web_password 字段后重启，即可重新创建'}</div>
+      </div>`;
+    document.body.appendChild(el);
+
+    const errEl = document.getElementById('cc-login-err');
+    const btn = document.getElementById('cc-login-btn');
+
+    const submit = async () => {
+      const pwd = isSetup
+        ? document.getElementById('cc-setup-input').value
+        : document.getElementById('cc-login-input').value;
+      if (!pwd) return;
+      if (isSetup && pwd !== document.getElementById('cc-setup-confirm').value) {
+        errEl.textContent = '两次输入的密码不一致';
+        return;
+      }
+      btn.disabled = true;
+      errEl.textContent = '';
+      try {
+        const body = isSetup
+          ? { password: pwd, confirm: document.getElementById('cc-setup-confirm').value }
+          : { password: pwd };
+        const r = await _rawFetch(isSetup ? '/api/setup' : '/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (r.ok) {
+          el.remove();
+          authRequired = false;
+          location.reload();
+        } else {
+          let msg = isSetup ? '创建失败' : '登录失败';
+          try { msg = (await r.json()).error || msg; } catch (e) {}
+          errEl.textContent = msg;
         }
-        btn.disabled = false;
-      };
+      } catch (e) {
+        errEl.textContent = '网络错误: ' + e.message;
+      }
+      btn.disabled = false;
+    };
 
-      document.getElementById('cc-login-btn').addEventListener('click', submit);
-      document.getElementById('cc-login-input').addEventListener('keydown', (ev) => {
+    const inputs = isSetup
+      ? ['cc-setup-input', 'cc-setup-confirm']
+      : ['cc-login-input'];
+    inputs.forEach(id => {
+      document.getElementById(id).addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter') submit();
       });
-    }
+    });
+    btn.addEventListener('click', submit);
+
     el.style.display = 'flex';
-    if (message) {
-      document.getElementById('cc-login-err').textContent = message;
-    }
+    if (message) errEl.textContent = message;
     setTimeout(() => {
-      const i = document.getElementById('cc-login-input');
-      if (i) i.focus();
+      const first = document.getElementById(inputs[0]);
+      if (first) first.focus();
     }, 50);
   }
 
@@ -143,6 +194,83 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     return resp;
   };
+
+  // ── 更新日志 ────────────────────────────────────────────────
+  // 内容直接取自仓库 CHANGELOG.md，用户不用去 GitHub 也能看到这次更新了什么
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  // 极简 Markdown 渲染：只处理标题、无序列表与行内代码/加粗，够展示 CHANGELOG 即可。
+  // 先转义再替换，避免把日志内容当成 HTML 执行。
+  function inlineMarkdown(s) {
+    return escapeHtml(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  }
+
+  function renderMarkdown(md) {
+    const lines = String(md || '').split(/\r?\n/);
+    let html = '';
+    let inList = false;
+    const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, '');
+      if (!line.trim()) { closeList(); continue; }
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        closeList();
+        // 从 h3 起，避免与页面自身的标题层级冲突
+        const level = Math.min(6, heading[1].length + 2);
+        html += '<h' + level + '>' + inlineMarkdown(heading[2]) + '</h' + level + '>';
+      } else if (/^[-*]\s+/.test(line)) {
+        if (!inList) { html += '<ul>'; inList = true; }
+        html += '<li>' + inlineMarkdown(line.replace(/^[-*]\s+/, '')) + '</li>';
+      } else {
+        closeList();
+        html += '<p>' + inlineMarkdown(line) + '</p>';
+      }
+    }
+    closeList();
+    return html || '<p>暂无更新日志</p>';
+  }
+
+  async function showChangelog() {
+    let el = document.getElementById('cc-changelog-modal');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'cc-changelog-modal';
+      el.innerHTML = `
+        <div class="cc-modal-card">
+          <div class="cc-modal-head">
+            <span class="cc-modal-title">更新日志</span>
+            <button class="cc-modal-close" id="cc-changelog-close" aria-label="关闭">×</button>
+          </div>
+          <div class="cc-modal-body" id="cc-changelog-body">加载中...</div>
+        </div>`;
+      document.body.appendChild(el);
+      el.addEventListener('click', (ev) => {
+        if (ev.target === el) el.style.display = 'none';
+      });
+      document.getElementById('cc-changelog-close').addEventListener('click', () => {
+        el.style.display = 'none';
+      });
+    }
+    el.style.display = 'flex';
+    const body = document.getElementById('cc-changelog-body');
+    body.innerHTML = '加载中...';
+    try {
+      const r = await _rawFetch('/api/changelog');
+      const d = await r.json();
+      body.innerHTML = renderMarkdown(d.changelog);
+      const title = document.querySelector('#cc-changelog-modal .cc-modal-title');
+      if (title && d.version) title.textContent = '更新日志 · v' + d.version;
+    } catch (e) {
+      body.innerHTML = '<p>加载失败: ' + escapeHtml(e.message) + '</p>';
+    }
+  }
 
   // Fetch Status
   async function fetchStatus() {
@@ -495,6 +623,28 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   });
+
+  // 更新日志入口
+  const changelogBtn = document.getElementById('btn-changelog');
+  if (changelogBtn) {
+    changelogBtn.addEventListener('click', showChangelog);
+  }
+
+  // 侧栏版本号改为后端注入（此前前端硬编码 v1.0.0，与实际构建版本不一致）
+  (async () => {
+    try {
+      const r = await _rawFetch('/api/auth-status');
+      if (!r.ok) return;
+      const d = await r.json();
+      const el = document.getElementById('sidebar-version');
+      if (el && d.version) {
+        const v = String(d.version);
+        el.textContent = (v.startsWith('v') ? v : 'v' + v) + ' · 边缘智能';
+      }
+    } catch (e) {
+      // 版本号拿不到就保留静态占位，不影响面板功能
+    }
+  })();
 
   // Init Intervals
   fetchStatus();

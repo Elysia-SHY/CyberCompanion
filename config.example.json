@@ -17,5 +17,6 @@
   "token_budget": 6000,
   "enable_stickers": true,
   "enable_exec": false,
-  "exec_whitelist": []
+  "exec_whitelist": [],
+  "stream_reply": true
 }

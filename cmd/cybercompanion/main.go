@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -46,7 +49,12 @@ func main() {
 	showHardwareJSON := flag.Bool("hardware-json", false, "以 JSON 格式打印本机详细硬件信息后退出")
 	showVersion := flag.Bool("version", false, "打印版本信息后退出")
 	showVersionShort := flag.Bool("V", false, "打印单行版本信息后退出（便于脚本消费）")
+	healthCheck := flag.Bool("health", false, "健康检查模式：探测本机 /healthz 并按结果设置退出码（供 Docker / 编排探针调用）")
 	flag.Parse()
+
+	if *healthCheck {
+		os.Exit(runHealthCheck(*configFile))
+	}
 
 	// 版本查询必须走 os.Exit(0)，不能 return —— 之前 CI 里的冒烟测试
 	// 执行 `-version` 时因为该参数未定义而报错，但进程仍以 0 退出，
@@ -71,12 +79,20 @@ func main() {
 
 	printBanner()
 
+	// 让面板侧边栏显示与二进制一致的版本号（此前前端硬编码 v1.0.0）
+	web.SetVersion(resolveVersionString())
+
 	// 1. Load or initialize configuration
 	cfg, err := config.LoadConfig(*configFile)
 	if err != nil {
 		log.Fatalf("[Fatal] 加载配置文件失败: %v", err)
 	}
 	qq.AddLog("[Config] 成功加载配置: %s", *configFile)
+
+	// 启动体检：把「配错了只会看到一直重连」变成启动时的明确提示
+	for _, issue := range cfg.Validate() {
+		qq.AddLog("[Config] ⚠️ %s", issue)
+	}
 
 	if *webPort > 0 {
 		cfg.WebPort = *webPort
@@ -88,28 +104,99 @@ func main() {
 	info := driver.GetInfo()
 	qq.AddLog("[HAL] 宿主系统: %s (%s) | 主机名: %s", info.OS, info.Arch, info.Hostname)
 
-	// 3. Start QQ Bot Gateway Loop
+	// 3. root context：所有后台协程都挂在这里，退出时统一取消
+	rootCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 会话记忆持久化：进程重启后仍记得之前聊过什么
+	qq.StartSessionStore(rootCtx, config.ConfigDir())
+
+	// 4. Start QQ Bot Gateway Loop
 	qq.AddLog("[QQ Bot] 正在初始化 QQ 官方机器人网关引擎...")
-	qq.StartBotGateway()
+	qq.StartBotGateway(rootCtx)
 
-	// 4. Handle OS signals for graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		qq.AddLog("[System] 收到退出信号 (%v)，正在安全退出...", sig)
-		os.Exit(0)
-	}()
-
-	// 5. Start Embedded WebUI Server (Blocks main goroutine)
+	// 5. Start Embedded WebUI Server
 	port := cfg.WebPort
 	if port <= 0 {
 		port = 8088
 	}
-	qq.AddLog("[WebUI] 仪表盘已启动，请用浏览器访问: http://0.0.0.0:%d", port)
-	if err := web.StartServer(port); err != nil {
-		log.Fatalf("[WebUI] Web 服务启动异常: %v", err)
+	_, srv, err := web.NewServer(port, qq.Service{})
+	if err != nil {
+		log.Fatalf("[WebUI] Web 服务初始化失败: %v", err)
 	}
+	go func() {
+		qq.AddLog("[WebUI] 仪表盘已启动，请用浏览器访问: http://127.0.0.1:%d", port)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			qq.AddLog("[WebUI] Web 服务异常退出: %v", err)
+		}
+	}()
+
+	// 6. 等待退出信号，然后按序优雅关闭。
+	//
+	// 之前这里直接 os.Exit(0)：所有 defer 被跳过，WebSocket 不发 Close 帧、
+	// 会话没有落盘、队列里的消息全部丢失（优化建议书 2.4）。
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+
+	qq.AddLog("[System] 收到退出信号，正在安全退出...")
+
+	// 先停面板：不再接收新请求
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		qq.AddLog("[WebUI] 关闭超时: %v", err)
+	}
+
+	// 再停网关：cancel 会触发 WS Close 帧并让重连循环退出
+	cancel()
+
+	// 排空发送队列，最后落盘会话
+	qq.StopSender()
+	qq.StopSessionStore()
+	qq.AddLog("[System] 已安全退出")
+}
+
+// runHealthCheck 以进程退出码表达服务健康状态，供容器探针使用。
+//
+// distroless 这类镜像里没有 curl / wget / shell，只能靠程序自带的探针。
+// 只读配置文件拿端口，绝不写盘 —— 探针可能每秒被调用一次。
+func runHealthCheck(configFile string) int {
+	port := readPortFromConfig(configFile)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+	if err != nil {
+		fmt.Printf("unhealthy: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		fmt.Println("ok")
+		return 0
+	}
+	fmt.Printf("degraded: HTTP %d\n", resp.StatusCode)
+	return 1
+}
+
+// readPortFromConfig 只解析 web_port 一个字段，失败时回退到默认端口。
+func readPortFromConfig(path string) int {
+	const defaultPort = 8088
+	if path == "" {
+		return defaultPort
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return defaultPort
+	}
+	var partial struct {
+		WebPort int `json:"web_port"`
+	}
+	if err := json.Unmarshal(data, &partial); err != nil || partial.WebPort <= 0 {
+		return defaultPort
+	}
+	return partial.WebPort
 }
 
 // reportHardware 打印本机详细硬件信息。

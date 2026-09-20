@@ -32,6 +32,9 @@ type Config struct {
 	TokenBudget    int      `json:"token_budget"`
 	ExecWhitelist  []string `json:"exec_whitelist,omitempty"`
 	EnableExec     bool     `json:"enable_exec"`
+	// StreamReply 开启私聊流式输出：边生成边发，避免长回复长时间无反馈。
+	// 群聊始终走一次性发送（分段追加会刷屏并可能触发风控）。
+	StreamReply bool `json:"stream_reply"`
 }
 
 var (
@@ -42,6 +45,11 @@ var (
 
 const (
 	filePerm = 0o600 // 配置文件含 AppSecret / API Key / 口令，必须仅属主可读
+
+	// minPasswordLen 面板密码最小长度。与 Validate 里的阈值保持一致，
+	// 避免两处各写一个数字后逐渐分叉。
+	minPasswordLen = 8
+	maxPasswordLen = 128
 
 	// legacyDefaultPasscode 是历史版本内置的硬编码主人口令。
 	// 由于源码公开，该口令等同于「任何人都是主人」，加载时会被清空并要求重新设置。
@@ -84,11 +92,14 @@ func DefaultConfig() *Config {
 		OwnersFile:     "owners.json",
 		Passcode:       "", // 由用户在 WebUI 或配置文件中自定义
 		WebPort:        8088,
-		WebPassword:    "", // 首次启动时自动生成并展示，可后续修改
+		WebPassword:    "", // 首次打开面板时由用户创建，不在后台自动生成
 		EnableStickers: true,
 		EnableExec:     true,
 		MaxHistoryMsgs: 40,
 		TokenBudget:    6000,
+		// 流式对体验提升明显（长回复不再"石沉大海"），默认开启。
+		// 若网关不支持 SSE，llm 包会自动回退到非流式，无需用户干预。
+		StreamReply: true,
 	}
 }
 
@@ -98,7 +109,7 @@ func DefaultConfig() *Config {
 //   - 来自磁盘时，Passcode 为空视为「用户还没设置」，保持为空
 //   - 首次创建时同样保持为空，由用户自行设置
 //
-// 无论哪种情况，WebPassword 都会在为空时自动生成，保证面板不会裸奔。
+// WebPassword 同样保持为空，由面板引导用户创建（见下方说明）。
 func normalize(cfg *Config, fromDisk bool) bool {
 	changed := false
 
@@ -111,11 +122,16 @@ func normalize(cfg *Config, fromDisk bool) bool {
 		cfg.Passcode = ""
 		changed = true
 	}
-	// 管理密码不允许为空，否则面板无鉴权
-	if cfg.WebPassword == "" {
-		cfg.WebPassword = GeneratePasscode()
-		changed = true
-	}
+	// 管理密码为空表示「尚未完成初始化」，由面板首次打开时引导用户创建。
+	//
+	// 旧行为是在这里自动生成一串随机密码写进 config.json。这在有终端的机器上
+	// 只是麻烦，但在 Android / 随身 WiFi 这类没有 shell 的设备上是致命的：
+	// 用户打不开 config.json，打开面板只会看到一个永远答不对的登录框。
+	// 改为由用户自己创建后，密码就成了用户真正知道的东西。
+	//
+	// 未设置密码期间不存在裸奔窗口：/api/login 会拒绝空密码登录，
+	// 其余 /api/* 均要求已登录会话，因此此时无人能读写任何配置。
+
 	if cfg.MaxHistoryMsgs <= 0 {
 		cfg.MaxHistoryMsgs = 40
 		changed = true
@@ -141,7 +157,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		cfg := DefaultConfig()
-		// 首次启动也要走一遍安全默认值补齐（WebPassword 需自动生成）
+		// 首次启动同样走一遍默认值补齐（端口、历史条数等）
 		normalize(cfg, false)
 		if err := persistLocked(cfg); err != nil {
 			return nil, fmt.Errorf("failed to write default config: %w", err)
@@ -253,6 +269,24 @@ func persistLocked(cfg *Config) error {
 	return WriteFileAtomic(configFilePath, data, filePerm)
 }
 
+// ValidateWebPassword 校验面板密码是否可用，返回空字符串表示通过。
+//
+// 只做最基本的长度与空白检查：这是本机单用户面板，
+// 强制大小写数字符号反而会让用户把密码记在便签上，得不偿失。
+func ValidateWebPassword(pwd string) string {
+	switch {
+	case pwd == "":
+		return "密码不能为空"
+	case len(pwd) < minPasswordLen:
+		return fmt.Sprintf("密码至少需要 %d 位", minPasswordLen)
+	case len(pwd) > maxPasswordLen:
+		return fmt.Sprintf("密码过长（上限 %d 位）", maxPasswordLen)
+	case strings.TrimSpace(pwd) != pwd:
+		return "密码首尾不能包含空格或换行"
+	}
+	return ""
+}
+
 // IsOwner checks if openid is in the owner list
 func (c *Config) IsOwner(openid string) bool {
 	if openid == "" {
@@ -341,7 +375,9 @@ func (c *Config) Validate() []string {
 	} else if len(c.Passcode) < 8 {
 		issues = append(issues, "passcode 过短（<8 位），存在被暴力猜解的风险")
 	}
-	if len(c.WebPassword) < 8 {
+	if c.WebPassword == "" {
+		issues = append(issues, "面板密码尚未创建，首次打开控制台时会引导设置")
+	} else if len(c.WebPassword) < minPasswordLen {
 		issues = append(issues, "web_password 过短（<8 位），管理面板存在被爆破的风险")
 	}
 	if c.EnableExec && len(c.ExecWhitelist) == 0 {

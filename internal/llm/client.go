@@ -3,7 +3,6 @@ package llm
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -32,6 +31,8 @@ type ChatRequest struct {
 	Messages    []Message `json:"messages"`
 	Temperature float64   `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
+	// Stream 为 true 时服务端以 SSE 增量返回，由 CallLLMStream 消费
+	Stream bool `json:"stream,omitempty"`
 }
 
 type ChatResponse struct {
@@ -72,14 +73,57 @@ var httpClient = &http.Client{
 // 防止异常端点返回超大内容导致内存暴涨。
 const maxRespBytes = 8 << 20
 
-// CallLLM sends chat messages to configured LLM endpoint
+// CallLLM sends chat messages to configured LLM endpoint.
+//
+// 返回的错误统一是 *Error，便于上层判断是否重试、以及给用户看什么。
+// 单次调用不带重试；需要重试请用 CallLLMWithRetry。
 func CallLLM(messages []Message) (string, error) {
 	cfg := config.Get()
 	if cfg.OneAPIURL == "" {
-		return "", fmt.Errorf("LLM endpoint URL not configured")
+		return "", &Error{Kind: KindBadRequest, Detail: "LLM endpoint URL not configured"}
 	}
 
-	model := cfg.Model
+	body, err := buildRequest(cfg.OneAPIURL, cfg.OneAPIToken, cfg.Model, messages, false)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := httpClient.Do(body)
+	if err != nil {
+		return "", classifyNetErr(err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxRespBytes))
+	if err != nil {
+		return "", classifyNetErr(err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", classifyHTTPError(resp.StatusCode, string(bodyBytes))
+	}
+
+	var chatResp ChatResponse
+	if err := json.Unmarshal(bodyBytes, &chatResp); err != nil {
+		return "", &Error{Kind: KindServer, Status: resp.StatusCode,
+			Detail: "failed to parse LLM response: " + err.Error(), wrapped: err}
+	}
+
+	if chatResp.Error != nil && chatResp.Error.Message != "" {
+		return "", &Error{Kind: KindBadRequest, Status: resp.StatusCode,
+			Detail: "LLM API error: " + chatResp.Error.Message}
+	}
+
+	if len(chatResp.Choices) == 0 {
+		return "", &Error{Kind: KindServer, Status: resp.StatusCode,
+			Detail: "no response choices returned from LLM"}
+	}
+
+	return chatResp.Choices[0].Message.Content, nil
+}
+
+// buildRequest 构造一次 chat 请求，流式与非流式共用。
+func buildRequest(endpoint, token, model string, messages []Message, stream bool) (*http.Request, error) {
 	if model == "" {
 		model = "deepseek-chat"
 	}
@@ -88,52 +132,29 @@ func CallLLM(messages []Message) (string, error) {
 		Model:       model,
 		Messages:    messages,
 		Temperature: 0.7,
+		Stream:      stream,
 	}
 
 	data, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal chat request: %w", err)
+		return nil, &Error{Kind: KindBadRequest, Detail: "failed to marshal chat request: " + err.Error(), wrapped: err}
 	}
 
-	req, err := http.NewRequest("POST", cfg.OneAPIURL, bytes.NewBuffer(data))
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(data))
 	if err != nil {
-		return "", fmt.Errorf("failed to create http request: %w", err)
+		return nil, &Error{Kind: KindBadRequest, Detail: "failed to create http request: " + err.Error(), wrapped: err}
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if cfg.OneAPIToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.OneAPIToken)
+	if stream {
+		req.Header.Set("Accept", "text/event-stream")
+		// 流式响应不能被中间缓存，否则会拿到整段缓冲而非增量
+		req.Header.Set("Cache-Control", "no-cache")
 	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("LLM request failed: %w", err)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxRespBytes))
-	if err != nil {
-		return "", fmt.Errorf("failed to read LLM response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("LLM API returned HTTP %d: %s", resp.StatusCode, truncate(string(bodyBytes), 300))
-	}
-
-	var chatResp ChatResponse
-	if err := json.Unmarshal(bodyBytes, &chatResp); err != nil {
-		return "", fmt.Errorf("failed to parse LLM response: %w", err)
-	}
-
-	if chatResp.Error != nil && chatResp.Error.Message != "" {
-		return "", fmt.Errorf("LLM API error: %s", chatResp.Error.Message)
-	}
-
-	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("no response choices returned from LLM")
-	}
-
-	return chatResp.Choices[0].Message.Content, nil
+	return req, nil
 }
 
 // truncate 截断字符串，避免超长错误信息污染日志与返回值。

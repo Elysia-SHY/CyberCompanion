@@ -1,12 +1,15 @@
 # ==============================================================================
 # CyberCompanion 多阶段构建镜像
 #   构建: docker build -t cybercompanion:latest -f scripts/Dockerfile .
-#   运行: docker run -d --name cybercompanion -p 8088:8088 \
+#   运行: docker run -d --name cybercompanion -p 127.0.0.1:8088:8088 \
 #                  -v cybercompanion-data:/data cybercompanion:latest
+#
+# 运行阶段使用 distroless：镜像里没有 shell、没有包管理器，攻击面最小。
+# 因此健康检查不能用 curl/wget，改为调用程序自带的 -health 探针。
 # ==============================================================================
 
 # ---------- 构建阶段 ----------
-FROM golang:1.21-alpine AS builder
+FROM golang:1.22-alpine AS builder
 
 ARG VERSION=dev
 ARG TARGETOS=linux
@@ -20,33 +23,30 @@ RUN go mod download
 
 COPY . .
 
+# -trimpath 去掉构建机路径（既减小体积，也避免泄露开发机目录结构）
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/cybercompanion ./cmd/cybercompanion
 
 # ---------- 运行阶段 ----------
-FROM alpine:3.19
-
-RUN apk --no-cache add ca-certificates tzdata \
- && addgroup -g 10001 -S cyber \
- && adduser -u 10001 -S cyber -G cyber -h /data
+FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /data
 
-COPY --from=builder /out/cybercompanion /usr/local/bin/cybercompanion
-COPY --chown=cyber:cyber config.example.json /data/config.example.json
+COPY --from=builder --chown=65532:65532 /out/cybercompanion /cybercompanion
+COPY --chown=65532:65532 config.example.json /data/config.example.json
 
-# 运行期数据（config.json / owners.json / exec_audit.log）都落在 /data 卷
+# 运行期数据（config.json / owners.json / sessions.json / exec_audit.log）都落在 /data 卷
 VOLUME ["/data"]
 EXPOSE 8088
 
-# 以非 root 身份运行
-USER cyber
+# distroless 镜像自带非 root 用户 65532
+USER 65532:65532
 
-# 容器内没有 curl，用 wget 做健康检查（alpine 自带 busybox wget）
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8088/api/health || exit 1
+# 用程序自带探针做健康检查（无 shell 依赖）
+HEALTHCHECK --interval=30s --timeout=8s --start-period=20s --retries=3 \
+  CMD ["/cybercompanion", "-health", "-config", "/data/config.json"]
 
-ENTRYPOINT ["/usr/local/bin/cybercompanion"]
+ENTRYPOINT ["/cybercompanion"]
 CMD ["-config", "/data/config.json"]

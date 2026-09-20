@@ -29,11 +29,18 @@
   - **飞猫 U20 (Unisoc T7510)**：读取 5G NR 信号、RSRP、基站信息、当日出入流量与核心温度。
   - **高通 410 / 210 (MSM8916/8909)**：适配 OpenStick 与各分支随身 WiFi，读取基带状态与负载。
   - **macOS / Windows / Linux**：读取 CPU 架构、系统负载、内存用量与网络连接。
-- **内置 Web 管理面板**：默认监听 `8088` 端口，提供状态监控、人设切换、API 密钥修改与实时日志流。
+- **内置 Web 管理面板**：默认监听 `8088` 端口，提供状态监控、人设切换、API 密钥修改、实时日志流与内置「更新日志」入口；首次打开引导创建面板密码。
 - **多模态图片识别**：支持在 QQ 对话中直接发送图片，调用大模型视觉接口返回内容分析。
 - **情境表情包发送**：根据用户输入意图（打招呼、表白、调侃、询问饮食等）自动发送对应的 Base64 本地表情，规避图床防盗链与图裂问题。
 - **人设与提示词切换**：预设大肥鱼、爱莉希雅、猫娘与极客助手 4 种性格，支持在聊天或 Web 面板中自定义 System Prompt。
 - **权限与访客隔离**：普通用户仅能闲聊与识图，无法触发设备重启或执行命令；发送自定义口令可认证为管理员并持久化保存。
+- **流式回复（私聊）**：大模型边生成边发送，长回复不再"发完消息石沉大海"，等待期间还有"💭"即时反馈。群聊仍为一次性发送，避免分段刷屏。
+- **上下文按 Token 预算裁剪**：不再按"条数"截断历史，短消息不会被误裁、长消息也不会撑爆上下文窗口。
+- **会话记忆持久化**：对话上下文每 60 秒增量落盘（`sessions.json`，0600 权限），进程重启后仍然记得之前聊过什么。
+- **不丢消息的发送队列**：出站消息走单 worker 串行队列，失败按指数退避重试 3 次；超长回复自动按语义边界分段。
+- **大模型调用容错**：网络/5xx/限流自动重试，连续失败触发熔断；面向用户的提示是"人话"，技术细节只进日志。
+- **可观测性**：`/healthz` 健康检查（网关断线或熔断时返回 503）、`/debug/vars` 指标、`CC_DEBUG=1` 时挂载 pprof。
+- **优雅关闭**：收到 SIGINT/SIGTERM 后按序停止面板、发送 WebSocket Close 帧、排空发送队列、落盘会话。
 
 ---
 
@@ -123,14 +130,17 @@ flowchart TD
 
 ### 步骤 0：首次启动会拿到什么
 
-程序首次启动时会自动创建 `config.json`（权限 `600`）并**随机生成一个 Web 面板登录密码**，打印在日志里，格式类似：
+程序首次启动时会自动创建 `config.json`（权限 `600`），**但不会替你生成面板密码**。第一次打开面板时会先让你创建一个：
 
 ```
 [WebUI] 管理面板已启动: http://127.0.0.1:8088
-[WebUI] 面板需登录访问；管理密码见 config.json 的 web_password 字段
 ```
 
-> **主人认证口令（`passcode`）不会自动生成，必须由你自己填写** —— 它相当于把设备的控制权交出去，随机值没有意义，只有你自己记得住的口令才有用。
+之所以不自动生成：早期版本会在启动时随机生成一串密码写进 `config.json`，在有终端的机器上只是麻烦，而在 Android / 随身 WiFi 这类看不到配置文件的设备上，用户只能面对一个永远答不对的登录框。现在密码由你自己创建，也就只有你自己知道。
+
+> 忘记密码时，删掉 `config.json` 里的 `web_password` 字段（或整个字段留空）后重启，面板会重新进入创建流程。
+
+> **主人认证口令（`passcode`）同样需要你自己填写** —— 它相当于把设备的控制权交出去，随机值没有意义，只有你自己记得住的口令才有用。
 
 ### 方式一：Android 手机 / 平板直接安装 (推荐手机用户)
 
@@ -138,6 +148,7 @@ flowchart TD
 
 - 安装后直接启动，应用通过前台常驻服务维持后台 24 小时运行。
 - 打开应用即可在手机屏幕上直接操作 Web 控制台，无需 Root 权限。
+- 首次打开会引导创建面板密码；之后应用会读取本机配置自动登录，不再重复输入。
 - 已在系统层面申请忽略电池优化白名单，并以 `JobScheduler` 作为进程被系统回收后的兜底拉活手段。
 
 ### 方式二：随身 WiFi 与 Linux 一键安装
@@ -175,15 +186,30 @@ CC_REPO=your-mirror/CyberCompanion bash install.sh
 git clone https://github.com/Elysia-SHY/CyberCompanion.git
 cd CyberCompanion
 
+# 推荐：使用 compose 模板（只绑本机回环、丢弃全部 capabilities、只读根文件系统）
+mkdir -p data && cp config.example.json data/config.json
+docker compose -f scripts/docker-compose.yml up -d
+
+# 或者手动构建运行
 docker build -t cybercompanion:latest -f scripts/Dockerfile .
 docker run -d --name cybercompanion \
-  -p 8088:8088 \
+  -p 127.0.0.1:8088:8088 \
   -v cybercompanion-data:/data \
+  --cap-drop ALL --security-opt no-new-privileges:true \
   --restart unless-stopped \
   cybercompanion:latest
 ```
 
-容器以非 root 用户（uid 10001）运行，配置与审计日志持久化在 `/data` 卷，内置 `HEALTHCHECK` 探针。
+运行镜像基于 distroless（无 shell、无包管理器），以非 root 用户（uid 65532）运行，配置与会话持久化在 `/data` 卷。
+
+注意端口写法：`127.0.0.1:8088:8088` 只对本机开放，直接写 `8088:8088` 等于把管理面板暴露到公网。
+
+健康检查用程序自带探针（distroless 里没有 curl/wget）：
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' cybercompanion
+# 也可手动执行：docker exec cybercompanion /cybercompanion -health -config /data/config.json
+```
 
 ### 方式四：手动下载运行 (Mac / PC / 服务器)
 
@@ -214,7 +240,7 @@ cybercompanion.exe
 
 ## 首次配置流程
 
-1. 打开 Web 面板 `http://<设备IP>:8088`，用日志中打印的 `web_password` 登录。
+1. 打开 Web 面板 `http://<设备IP>:8088`。首次使用会先引导创建面板密码，创建后直接进入面板；之后每次打开输入该密码即可（Android App 会自动登录，无需输入）。
 2. 在「参数设置」页填入 QQ 机器人 `AppID`、`AppSecret` 与大模型 API Key。
 3. **在「参数设置」页设置主人认证口令**（`passcode`），保存后即刻生效。
 4. 在 QQ 中私聊机器人，发送你刚设置的口令，即可完成主人认证，当前账号会被写入 `owners.json`。
@@ -230,6 +256,19 @@ cybercompanion.exe
 - **人设配置**：点击预设卡片切换角色，或在输入框中直接修改 System Prompt。
 - **参数设置**：修改 QQ 机器人的 AppID、Secret、模型接口地址与认证口令，保存后即时生效。密钥在界面上以 `Supe••••••••3456` 形式掩码显示。
 - **运行日志**：查看 WebSocket 消息收发与大模型调用详情，日志按增量追加刷新。
+
+### 常用配置字段
+
+| 字段 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `stream_reply` | `true` | 私聊流式输出开关。群聊恒为非流式；若网关不支持 SSE 会自动回退 |
+| `token_budget` | `6000` | 上下文 token 预算，超预算从最早的历史开始丢弃 |
+| `max_history_msgs` | `40` | 普通会话的消息条数上限（主人为其 5 倍，下限 200 条） |
+| `web_port` | `8088` | 面板监听端口 |
+| `enable_exec` | `false` | 远程命令总开关；开启时建议同时配置 `exec_whitelist` |
+| `passcode` | 空 | 主人认证口令。留空则主人模式关闭 |
+
+运行期还会生成两个文件：`sessions.json`（会话记忆，0600）与 `exec_audit.log`（命令审计）。
 
 ---
 

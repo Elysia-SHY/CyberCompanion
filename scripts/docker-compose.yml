@@ -1,0 +1,47 @@
+# ==============================================================================
+# CyberCompanion Docker Compose 示例
+#   用法: cp config.example.json data/config.json 后编辑，再执行
+#         docker compose -f scripts/docker-compose.yml up -d
+#
+# 安全要点：
+#   1. 端口只绑 127.0.0.1 —— 直接写 "8088:8088" 等于把管理面板暴露到公网
+#   2. cap_drop: ALL + no-new-privileges —— 容器内不再有任何特权
+#   3. read_only + tmpfs —— 根文件系统只读，只有 /data 可写
+# ==============================================================================
+
+services:
+  cybercompanion:
+    build:
+      context: ..
+      dockerfile: scripts/Dockerfile
+    image: cybercompanion:latest
+    container_name: cybercompanion
+    restart: unless-stopped
+
+    # 只监听本机回环；需要外网访问时请在前面加反向代理并开启 HTTPS
+    ports:
+      - "127.0.0.1:8088:8088"
+
+    volumes:
+      - ./data:/data
+
+    # ── 最小权限 ──
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # ── 资源上限：随身 WiFi / 小主机内存有限 ──
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

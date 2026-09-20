@@ -31,6 +31,15 @@ public class BotService extends Service {
     private static boolean isRunning = false;
     private static String statusMessage = "初始化中...";
 
+    // ── 崩溃自动重启 ──────────────────────────────────────────────────────
+    // Go 核心进程一旦异常退出，此前只会把状态置为"已退出"然后干等，
+    // 必须用户手动打开 App 才恢复 —— 这与"24 小时在线"的承诺不符（建议书 7.1 ③）。
+    // 这里改为带退避的自动重启：崩溃越频繁，等待越久，避免崩溃循环打满 CPU。
+    private static final int MAX_RESTART_ATTEMPTS = 5;
+    private static final long RESTART_BASE_DELAY_MS = 5000L;
+    private volatile boolean autoRestart = true;
+    private int restartCount = 0;
+
     public static boolean isServiceRunning() {
         return isRunning;
     }
@@ -75,6 +84,35 @@ public class BotService extends Service {
         statusMessage = "正在准备核心程序...";
 
         new Thread(() -> {
+            // 外层循环负责崩溃后的退避重启；runGoProcess 返回后决定是否继续
+            while (autoRestart) {
+                int exitCode = runGoProcess();
+                if (exitCode == 0) {
+                    // 正常退出（例如收到停止指令），不再重启
+                    break;
+                }
+                if (restartCount >= MAX_RESTART_ATTEMPTS) {
+                    statusMessage = "核心进程反复崩溃，已停止自动重启（请查看日志）";
+                    Log.e(TAG, statusMessage);
+                    break;
+                }
+                restartCount++;
+                long delay = RESTART_BASE_DELAY_MS * (1L << Math.min(restartCount - 1, 4));
+                statusMessage = "核心进程异常退出，" + (delay / 1000) + " 秒后第 " + restartCount + " 次重启";
+                Log.w(TAG, statusMessage);
+                if (!sleepQuietly(delay)) {
+                    break;
+                }
+                if (!autoRestart) {
+                    break;
+                }
+            }
+            isRunning = false;
+        }).start();
+    }
+
+    /** 返回进程退出码；启动失败时返回非 0 值以触发重启逻辑。 */
+    private int runGoProcess() {
             try {
                 File filesDir = getFilesDir();
                 File configFile = new File(filesDir, "config.json");
@@ -108,6 +146,8 @@ public class BotService extends Service {
                 pb.redirectErrorStream(true);
 
                 botProcess = pb.start();
+                // 连续运行超过 60 秒视为稳定，重置崩溃计数，避免历史累计导致过早放弃
+                resetCrashCounterAfterGracePeriod();
                 statusMessage = "核心服务已在后台运行 (端口: 8088)";
 
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(botProcess.getInputStream()))) {
@@ -122,14 +162,24 @@ public class BotService extends Service {
                 int exitCode = botProcess.waitFor();
                 statusMessage = "核心进程已退出 (代码: " + exitCode + ")";
                 Log.w(TAG, statusMessage);
-                isRunning = false;
+                return exitCode;
 
             } catch (Exception e) {
                 statusMessage = "启动异常: " + e.getMessage();
                 Log.e(TAG, "Failed to run Go core: ", e);
-                isRunning = false;
+                return -1;
             }
-        }).start();
+    }
+
+    /** 可被中断的等待；返回 false 表示等待被打断，应停止重启循环。 */
+    private boolean sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private File getOrExtractBinary() {
@@ -282,8 +332,27 @@ public class BotService extends Service {
                 .build();
     }
 
+    /**
+     * 进程稳定运行一段时间后清零崩溃计数。
+     * 这样"偶尔一次崩溃"不会累积到上限，只有真正的连续崩溃才会停止重启。
+     */
+    private void resetCrashCounterAfterGracePeriod() {
+        new Thread(() -> {
+            if (!sleepQuietly(60000L)) {
+                return;
+            }
+            synchronized (BotService.class) {
+                if (isRunning) {
+                    restartCount = 0;
+                }
+            }
+        }).start();
+    }
+
     @Override
     public void onDestroy() {
+        // 服务被系统或用户销毁时停止自动重启，避免"杀不掉"的副作用
+        autoRestart = false;
         if (botProcess != null) {
             botProcess.destroy();
         }

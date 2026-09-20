@@ -158,177 +158,23 @@ func authHeader() (string, error) {
 	return "QQBot " + tok, nil
 }
 
-// ─── Context Memory ──────────────────────────────────────────────────────────
-
-type MemoryItem struct {
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-type UserSession struct {
-	Messages []MemoryItem
-	LastSeen time.Time
-}
-
-var (
-	memLock  sync.Mutex
-	sessions = make(map[string]*UserSession)
-)
-
-func getSessionHistory(key string) []MemoryItem {
-	memLock.Lock()
-	defer memLock.Unlock()
-
-	sess, ok := sessions[key]
-	if !ok {
-		return nil
-	}
-	if time.Since(sess.LastSeen) > 24*time.Hour {
-		delete(sessions, key)
-		return nil
-	}
-	res := make([]MemoryItem, len(sess.Messages))
-	copy(res, sess.Messages)
-	return res
-}
-
-func recordSession(key, userMsg, botReply string, isOwner bool) {
-	memLock.Lock()
-	defer memLock.Unlock()
-
-	sess, ok := sessions[key]
-	if !ok {
-		sess = &UserSession{}
-		sessions[key] = sess
-	}
-	now := time.Now()
-	sess.LastSeen = now
-	sess.Messages = append(sess.Messages,
-		MemoryItem{Role: "user", Content: userMsg, Timestamp: now},
-		MemoryItem{Role: "assistant", Content: botReply, Timestamp: now},
-	)
-
-	// 历史上限：普通用户 40 条，主人放宽到配置值（默认 40，下限 200 条防误配）。
-	// 原实现对主人完全不设上限，长期运行会让 sessions 无限膨胀直至 OOM。
-	limit := 40
-	if isOwner {
-		limit = config.Get().MaxHistoryMsgs * 5
-		if limit < 200 {
-			limit = 200
-		}
-	}
-	if len(sess.Messages) > limit {
-		sess.Messages = sess.Messages[len(sess.Messages)-limit:]
-	}
-}
-
-func clearSession(key string) {
-	memLock.Lock()
-	defer memLock.Unlock()
-	delete(sessions, key)
-}
-
 // ─── Message Sending ─────────────────────────────────────────────────────────
-
-var seqCounters sync.Map
-
-func nextMsgSeq(target string) int {
-	v, _ := seqCounters.LoadOrStore(target, 0)
-	n := v.(int) + 1
-	seqCounters.Store(target, n)
-	return n
-}
-
-func SendTextMessage(targetOpenID string, groupOpenID string, content, msgID string) error {
-	auth, err := authHeader()
-	if err != nil {
-		return err
-	}
-	cfg := config.Get()
-	isGroup := groupOpenID != ""
-	var url string
-	replyKey := targetOpenID
-	if isGroup {
-		url = fmt.Sprintf("https://api.sgroup.qq.com/v2/groups/%s/messages", groupOpenID)
-		replyKey = groupOpenID
-	} else {
-		url = fmt.Sprintf("https://api.sgroup.qq.com/v2/users/%s/messages", targetOpenID)
-	}
-
-	payload := map[string]interface{}{
-		"content":  content,
-		"msg_type": 0,
-		"msg_seq":  nextMsgSeq(replyKey),
-	}
-	if msgID != "" {
-		payload["msg_id"] = msgID
-	}
-
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	req.Header.Set("Authorization", auth)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Union-Appid", cfg.QQAppID)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return nil
-}
-
-func SendStickerMedia(targetOpenID string, groupOpenID string, base64Data string) error {
-	auth, err := authHeader()
-	if err != nil {
-		return err
-	}
-	cfg := config.Get()
-	var url string
-	if groupOpenID != "" {
-		url = fmt.Sprintf("https://api.sgroup.qq.com/v2/groups/%s/files", groupOpenID)
-	} else {
-		url = fmt.Sprintf("https://api.sgroup.qq.com/v2/users/%s/files", targetOpenID)
-	}
-
-	payload := map[string]interface{}{
-		"file_type":    1,
-		"srv_send_msg": true,
-		"file_data":    base64Data,
-	}
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	req.Header.Set("Authorization", auth)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Union-Appid", cfg.QQAppID)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return nil
-}
+// 发送相关实现见 sender.go，会话记忆见 session.go。
 
 // ─── Incoming Message Processor ──────────────────────────────────────────────
 
 func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attachments []Attachment) {
 	cfg := config.Get()
 	isGroup := groupOpenID != ""
-	cleanText := strings.TrimSpace(text)
-
-	// Collect images
-	var imageURLs []string
-	for _, a := range attachments {
-		if a.URL != "" {
-			u := a.URL
-			if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-				u = "https://" + u
-			}
-			imageURLs = append(imageURLs, u)
-		}
+	// 收集附件：图片本地下载后内联（带类型与大小校验），语音/视频给出明确说明。
+	// 之前是把附件 URL 原样转给服务商：签名 URL 会过期、CDN 可能防盗链、
+	// 且没有任何类型与体积校验，一个超大非图片文件会被直接塞进请求体。
+	imageURLs, mediaNote := ProcessAttachments(attachments)
+	if mediaNote != "" {
+		text += mediaNote
 	}
+
+	cleanText := strings.TrimSpace(text)
 
 	if cleanText == "" && len(imageURLs) == 0 {
 		cleanText = "[向你发送了一个表情互动]"
@@ -338,6 +184,7 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 	if isGroup {
 		sessionKey = groupOpenID + "_" + senderOpenID
 	}
+	target := replyTarget{Sender: senderOpenID, Group: groupOpenID, MsgID: msgID}
 
 	isOwner := cfg.IsOwner(senderOpenID)
 	lowerText := strings.ToLower(cleanText)
@@ -374,7 +221,8 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 		if lowerText == "状态" || lowerText == "/status" || lowerText == "重启" {
 			replyContent = "🚫【权限受限】普通访客不能操作随身硬件设备哦！不过我们可以正常闲聊与多模态识图~"
 		} else {
-			replyContent = executeLLMChat(sessionKey, cleanText, imageURLs, false)
+			sendThinking(senderOpenID, groupOpenID, msgID)
+			replyContent = executeLLMChat(target, sessionKey, cleanText, imageURLs, false)
 		}
 	} else {
 		// 3. Owner Command Dispatch
@@ -436,7 +284,8 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 			}
 
 		default:
-			replyContent = executeLLMChat(sessionKey, cleanText, imageURLs, true)
+			sendThinking(senderOpenID, groupOpenID, msgID)
+			replyContent = executeLLMChat(target, sessionKey, cleanText, imageURLs, true)
 		}
 	}
 
@@ -444,8 +293,11 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 	reClean := regexp.MustCompile(`\[EMOJI:[a-zA-Z0-9_]+\]`)
 	replyContent = strings.TrimSpace(reClean.ReplaceAllString(replyContent, ""))
 
-	// Send text reply
-	_ = SendTextMessage(senderOpenID, groupOpenID, replyContent, msgID)
+	// 发送回复：按 QQ 单条长度上限切分后入队，失败自动重试。
+	// 之前是一条 SendTextMessage 直接丢出去，超长会被服务端拒绝且无日志记录。
+	if replyContent != "" {
+		SendTextSegmented(senderOpenID, groupOpenID, replyContent, msgID)
+	}
 
 	// Context Scene Sticker Dispatch
 	if cfg.EnableStickers {
@@ -453,16 +305,41 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 		if scene != "" {
 			stickerBase64 := stickers.GetRandomSceneSticker(scene)
 			if stickerBase64 != "" {
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					_ = SendStickerMedia(senderOpenID, groupOpenID, stickerBase64)
-				}()
+				SendSticker(senderOpenID, groupOpenID, stickerBase64)
 			}
 		}
 	}
 }
 
-func executeLLMChat(sessionKey, userText string, imageURLs []string, isOwner bool) string {
+// sendThinking 在真正调用大模型之前给用户一个即时反馈。
+//
+// 阻塞式调用在长回复场景要等十几秒，期间用户完全不知道机器人是否还活着
+// （优化建议书 1.4）。只在私聊发送：群聊里每条消息都跟一个气泡会显得吵。
+func sendThinking(senderOpenID, groupOpenID, msgID string) {
+	if groupOpenID != "" {
+		return
+	}
+	SendText(senderOpenID, groupOpenID, "💭", msgID)
+}
+
+// replyTarget 描述一条回复要发到哪里。
+// executeLLMChat 需要它才能在流式输出时边生成边发。
+type replyTarget struct {
+	Sender string // 私聊为 user openid
+	Group  string // 群 openid，私聊时为空
+	MsgID  string // 被动回复引用的消息 ID
+}
+
+// 流式分段追加的节流参数：
+// 每 streamFlushInterval 最多补发一次，且累积增量不少于 streamFlushMinChars，
+// 避免每个 token 都发一条消息把会话刷爆。
+const (
+	streamFlushInterval = 1500 * time.Millisecond
+	streamFlushMinChars = 80
+	streamMaxFlushChars = 400
+)
+
+func executeLLMChat(target replyTarget, sessionKey, userText string, imageURLs []string, isOwner bool) string {
 	_, activePrompt := persona.GetActivePersona()
 
 	var sysPrompt string
@@ -472,10 +349,18 @@ func executeLLMChat(sessionKey, userText string, imageURLs []string, isOwner boo
 		sysPrompt = activePrompt + "\n\n【权限状态：当前对话者为普通访客】\n正常聊天，严禁透露底层硬件控制或执行管理指令。"
 	}
 
+	cfg := config.Get()
+
 	var messages []llm.Message
 	messages = append(messages, llm.Message{Role: "system", Content: sysPrompt})
 
-	history := getSessionHistory(sessionKey)
+	// 上下文裁剪：条数不等于 token 数，按预算裁剪才是真的可控（优化建议书 1.5）。
+	// TokenBudget 为 0 时自动设为默认值，避免误配导致上下文为空。
+	budget := cfg.TokenBudget
+	if budget <= 0 {
+		budget = 6000
+	}
+	history := trimHistoryToBudget(getSessionHistory(sessionKey), budget)
 	for _, h := range history {
 		messages = append(messages, llm.Message{Role: h.Role, Content: h.Content})
 	}
@@ -498,18 +383,75 @@ func executeLLMChat(sessionKey, userText string, imageURLs []string, isOwner boo
 		messages = append(messages, llm.Message{Role: "user", Content: userText})
 	}
 
-	reply, err := llm.CallLLM(messages)
-	if err != nil {
-		AddLog("[LLM Error] %v", err)
-		return fmt.Sprintf("AI 思考超时或异常: %v", err)
+	var reply string
+	var err error
+	// streamed 标记本次是否走了流式：流式边收边发，调用方不能再发一遍
+	streamed := cfg.StreamReply && target.Group == ""
+	if streamed {
+		reply, err = streamChat(target, messages)
+	} else {
+		reply, err = llm.CallLLMWithRetry(messages, 3)
 	}
 
 	storedMsg := userText
 	if len(imageURLs) > 0 {
 		storedMsg = fmt.Sprintf("%s [附带图片]", userText)
 	}
+
+	if streamed {
+		// 流式路径已经把正文发出去了：这里不能再返回内容，否则会重发一遍。
+		// 只需把对话写入上下文记忆。
+		if err != nil {
+			AddLog("[LLM] 流式输出中断，已发送 %d 字符", len(reply))
+			SendText(target.Sender, target.Group, "…（生成被中断，等会儿再问我一次好吗？）", "")
+		}
+		if reply != "" {
+			recordSession(sessionKey, storedMsg, reply, isOwner)
+		}
+		return ""
+	}
+
+	if err != nil {
+		// 技术细节只进日志；回复给用户的是一句人话，同时避免泄露后端细节
+		AddLog("[LLM Error] %v", err)
+		return llm.UserFacingMessage(err)
+	}
+
 	recordSession(sessionKey, storedMsg, reply, isOwner)
 	return reply
+}
+
+// streamChat 边接收边发送。
+// 采用「累积到阈值就补发一段」而不是逐 token 发送：QQ 官方 API 不支持编辑已发消息，
+// 只能追加，过于频繁会被判刷屏。
+func streamChat(target replyTarget, messages []llm.Message) (string, error) {
+	var (
+		mu       sync.Mutex
+		full     strings.Builder
+		sent     int
+		lastSent time.Time
+	)
+
+	reply, err := llm.CallLLMStream(messages, func(delta string) {
+		mu.Lock()
+		defer mu.Unlock()
+		full.WriteString(delta)
+		pending := full.Len() - sent
+		if pending >= streamMaxFlushChars || (pending >= streamFlushMinChars && time.Since(lastSent) >= streamFlushInterval) {
+			part := full.String()[sent:]
+			sent = full.Len()
+			lastSent = time.Now()
+			SendTextSegmented(target.Sender, target.Group, part, target.MsgID)
+		}
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	// 补发尾部残留（正常结束或中途出错都适用，避免丢最后一段）
+	if rest := full.Len() - sent; rest > 0 {
+		SendTextSegmented(target.Sender, target.Group, full.String()[sent:], "")
+	}
+	return reply, err
 }
 
 // ─── WebSocket Engine ────────────────────────────────────────────────────────
@@ -532,25 +474,68 @@ func IsWSConnected() bool {
 	return wsConnected
 }
 
-func StartBotGateway() {
+// StartBotGateway 启动 QQ 网关连接循环，直到 ctx 被取消。
+//
+// ctx 取消时循环退出并主动关闭 WebSocket，不再依赖进程退出时的隐式清理
+// （优化建议书 2.4）。
+func StartBotGateway(ctx context.Context) {
 	go func() {
+		// 重连退避：连续失败时逐步拉长间隔，避免服务端异常期间疯狂重连
+		backoff := 10 * time.Second
+		const maxBackoff = 5 * time.Minute
+
 		for {
+			select {
+			case <-ctx.Done():
+				AddLog("[Bot] 网关已停止（收到退出信号）")
+				return
+			default:
+			}
+
 			cfg := config.Get()
 			if cfg.QQAppID == "" || cfg.QQSecret == "" {
-				AddLog("[Bot] Waiting for QQ AppID and Secret to be configured in WebUI...")
-				time.Sleep(5 * time.Second)
+				AddLog("[Bot] 等待在面板中填写 QQ AppID 与 Secret...")
+				if !sleepCtx(ctx, 10*time.Second) {
+					return
+				}
 				continue
 			}
 
-			if err := runGatewaySession(); err != nil {
-				AddLog("[Bot Gateway] Connection lost: %v. Retrying in 10s...", err)
+			if err := runGatewaySession(ctx); err != nil {
+				AddLog("[Bot Gateway] 连接中断: %v，%v 后重连", err, backoff)
+				if !sleepCtx(ctx, backoff) {
+					return
+				}
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
 			}
-			time.Sleep(10 * time.Second)
+
+			// 正常返回（通常是服务端关闭连接）：退避重置
+			backoff = 10 * time.Second
+			AddLog("[Bot Gateway] 连接结束，准备重连")
+			if !sleepCtx(ctx, 3*time.Second) {
+				return
+			}
 		}
 	}()
 }
 
-func runGatewaySession() error {
+// sleepCtx 可被取消的 sleep，被取消时返回 false。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func runGatewaySession(ctx context.Context) error {
 	auth, err := authHeader()
 	if err != nil {
 		return fmt.Errorf("auth token error: %w", err)
@@ -576,10 +561,28 @@ func runGatewaySession() error {
 	}
 
 	AddLog("[Bot Gateway] Connecting to %s", gwData.URL)
-	conn, _, err := wsDialer.Dial(gwData.URL, nil)
+	conn, _, err := wsDialer.DialContext(ctx, gwData.URL, nil)
 	if err != nil {
 		return fmt.Errorf("dial error: %w", err)
 	}
+
+	// 退出时先发 Close 帧再关连接：让服务端立即释放 session，
+	// 否则要等心跳超时才知道我们已经走了（优化建议书 2.4）。
+	sessionDone := make(chan struct{})
+	defer close(sessionDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(2*time.Second),
+			)
+			_ = conn.Close()
+		case <-sessionDone:
+		}
+	}()
+
 	defer conn.Close()
 
 	wsConnLock.Lock()
@@ -707,12 +710,13 @@ type authLimiterStore struct {
 var authLimiter = &authLimiterStore{entries: make(map[string]*authEntry)}
 
 func init() {
-	// 定期回收长期不活跃的限流记录，避免 OpenID 无限堆积
+	// 定期回收长期不活跃的限流记录与消息序号计数器，避免 key 无限堆积
 	go func() {
 		ticker := time.NewTicker(30 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
 			authLimiter.gc()
+			gcSeqCounters()
 		}
 	}()
 }
