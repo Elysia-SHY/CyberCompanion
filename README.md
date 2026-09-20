@@ -174,7 +174,7 @@ curl -sSL https://raw.githubusercontent.com/Elysia-SHY/CyberCompanion/main/scrip
 
 ```bash
 # 安装指定版本
-CC_VERSION=v1.2.1 bash install.sh
+CC_VERSION=v1.2.2 bash install.sh
 
 # 内网镜像部署
 CC_REPO=your-mirror/CyberCompanion bash install.sh
@@ -326,7 +326,7 @@ GOOS=windows GOARCH=amd64 go build -o cybercompanion-windows-amd64.exe ./cmd/cyb
 ./cybercompanion -V          # 单行摘要，便于脚本 grep
 
 # 示例输出
-# cybercompanion v1.2.1 (12d44c08) linux/amd64 built 2026-09-20T01:40:00Z
+# cybercompanion v1.2.2 (12d44c08) linux/amd64 built 2026-09-20T01:40:00Z
 ```
 
 ### 硬件信息自检

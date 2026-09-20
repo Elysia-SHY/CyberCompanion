@@ -853,3 +853,55 @@ textarea.form-control {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12.5px;
 }
+
+/* ─── 表情包管理表格 ─────────────────────────────────────────── */
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.data-table th,
+.data-table td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.07));
+  vertical-align: middle;
+}
+
+.data-table th {
+  font-weight: 600;
+  color: var(--text-dim, #9aa3b2);
+  background: rgba(127, 127, 127, 0.08);
+  white-space: nowrap;
+}
+
+.data-table tbody tr:hover {
+  background: rgba(127, 127, 127, 0.06);
+}
+
+.stk-thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.stk-src {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-dim, #9aa3b2);
+}

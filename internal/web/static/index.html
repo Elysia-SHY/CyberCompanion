@@ -33,6 +33,9 @@
         <button class="nav-btn" data-tab="logs">
           <span class="icon">📜</span> 实时运行日志
         </button>
+        <button class="nav-btn" data-tab="stickers">
+          <span class="icon">🖼️</span> 表情包与图床
+        </button>
       </nav>
       <div class="sidebar-footer">
         <div class="device-badge" id="sidebar-device">探测硬件中...</div>
@@ -263,6 +266,186 @@
           </div>
           <div class="terminal-view" id="terminal-view">
             <!-- Terminal lines injected here -->
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: STICKERS -->
+      <section class="tab-pane" id="tab-stickers">
+        <!-- 概览 -->
+        <div class="card">
+          <h3>🖼️ 表情包与图床</h3>
+          <p class="card-desc">让大模型自主发表情，或命中关键词自动发本地图；所有表情与图床配置在此统一管理。</p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>图床状态</label>
+              <div id="stk-host-status" class="stat-sub">检测中...</div>
+            </div>
+            <div class="form-group">
+              <label>表情总数</label>
+              <div id="stk-count" class="stat-sub">--</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 规则 -->
+        <div class="card">
+          <h3>⚙️ 发表情规则</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="stk-mode">发送来源优先级</label>
+              <select id="stk-mode" class="form-control">
+                <option value="auto">自动（有直链用直链，否则本地）</option>
+                <option value="local">仅本地副本</option>
+                <option value="url">仅图床直链</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="stk-max">单条回复最多表情数</label>
+              <input type="number" id="stk-max" class="form-control" min="0" max="5" value="1">
+            </div>
+          </div>
+          <div class="form-check">
+            <input type="checkbox" id="stk-smart">
+            <label for="stk-smart">允许大模型用 <code>[表情:xxx]</code> 自主发表情</label>
+          </div>
+          <div class="form-check">
+            <input type="checkbox" id="stk-keyword">
+            <label for="stk-keyword">命中关键词自动补一张表情（旧行为）</label>
+          </div>
+          <div class="form-group">
+            <label for="stk-cdn">本地文件公网直链前缀（如 jsDelivr，配后本地图也能外链）</label>
+            <input type="text" id="stk-cdn" class="form-control" placeholder="https://cdn.jsdelivr.net/gh/USER/REPO@main/internal/stickers/">
+          </div>
+          <div class="btn-group-right"><button class="btn btn-primary" id="btn-save-stk-settings">💾 保存规则</button></div>
+        </div>
+
+        <!-- 图床配置 -->
+        <div class="card">
+          <h3>☁️ 图床配置</h3>
+          <p class="card-desc">填齐后「上传到图床」会把本地表情推上去并改成直链来源。留空则只存本地、靠 CDN 前缀对外。</p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="stk-ih-provider">预设模板</label>
+              <select id="stk-ih-provider" class="form-control">
+                <option value="">自定义</option>
+                <option value="lsky">兰空图床 (Lsky Pro)</option>
+                <option value="chevereto">Chevereto</option>
+                <option value="easyimage">EasyImage</option>
+                <option value="smms">SM.MS</option>
+                <option value="s3">S3 预签名 PUT</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="stk-ih-url">上传接口 URL</label>
+              <input type="text" id="stk-ih-url" class="form-control" placeholder="https://img.example.com/api/v1/upload">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="stk-ih-method">上传方式</label>
+              <select id="stk-ih-method" class="form-control">
+                <option value="POST">POST multipart 表单</option>
+                <option value="PUT">PUT 原始字节流（预签名）</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="stk-ih-field">文件字段名</label>
+              <input type="text" id="stk-ih-field" class="form-control" placeholder="image">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="stk-ih-authmode">鉴权方式</label>
+              <select id="stk-ih-authmode" class="form-control">
+                <option value="">无</option>
+                <option value="bearer">Bearer Token</option>
+                <option value="header">自定义请求头</option>
+                <option value="form">表单字段</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="stk-ih-token">Token / 密钥</label>
+              <input type="password" id="stk-ih-token" class="form-control" placeholder="图床 API Token（不回显到页面之外）">
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="stk-ih-path">返回 URL 路径（点分，留空自动识别）</label>
+              <input type="text" id="stk-ih-path" class="form-control" placeholder="data.url">
+            </div>
+            <div class="form-group">
+              <label for="stk-ih-base">公共前缀（结果以 / 开头时拼接）</label>
+              <input type="text" id="stk-ih-base" class="form-control" placeholder="https://img.example.com">
+            </div>
+          </div>
+          <div class="btn-group-right">
+            <button class="btn btn-outline" id="btn-stk-host-test">🔌 测试连接</button>
+            <button class="btn btn-primary" id="btn-save-stk-host">💾 保存图床配置</button>
+          </div>
+          <div id="stk-host-test-result" class="card-desc"></div>
+        </div>
+
+        <!-- 上传 -->
+        <div class="card">
+          <h3>⬆️ 上传表情</h3>
+          <p class="card-desc">选图 → 选场景 → 上传并自动入库。目标选「图床」会先推到图床再入库（图床未配置则自动退回本地）。</p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="stk-up-scene">场景标签</label>
+              <select id="stk-up-scene" class="form-control"></select>
+            </div>
+            <div class="form-group">
+              <label for="stk-up-target">上传目标</label>
+              <select id="stk-up-target" class="form-control">
+                <option value="local">本地存储</option>
+                <option value="imagehost">图床（配置后）</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="stk-up-files">选择图片（可多选）</label>
+            <input type="file" id="stk-up-files" class="form-control" accept="image/*" multiple>
+          </div>
+          <div class="form-group">
+            <label for="stk-up-note">备注（可选）</label>
+            <input type="text" id="stk-up-note" class="form-control" placeholder="例如：精选大肥鱼">
+          </div>
+          <div class="form-check">
+            <input type="checkbox" id="stk-up-drop">
+            <label for="stk-up-drop">上传到图床后删掉本地副本（省空间）</label>
+          </div>
+          <div class="btn-group-right"><button class="btn btn-primary" id="btn-stk-upload">⬆️ 上传并入库</button></div>
+        </div>
+
+        <!-- 新增直链 -->
+        <div class="card">
+          <h3>🔗 手动添加直链表情</h3>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="stk-add-id">ID（可选，留空自动生成）</label>
+              <input type="text" id="stk-add-id" class="form-control" placeholder="love_9">
+            </div>
+            <div class="form-group">
+              <label for="stk-add-scene">场景</label>
+              <select id="stk-add-scene" class="form-control"></select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="stk-add-url">图床直链 URL</label>
+            <input type="text" id="stk-add-url" class="form-control" placeholder="https://...">
+          </div>
+          <div class="btn-group-right"><button class="btn btn-primary" id="btn-stk-add">➕ 添加直链表情</button></div>
+        </div>
+
+        <!-- 列表 -->
+        <div class="card">
+          <h3>📚 表情库</h3>
+          <div class="table-wrap">
+            <table class="data-table" id="stk-table">
+              <thead><tr><th>预览</th><th>ID</th><th>场景</th><th>来源</th><th>直链 / 文件</th><th>备注</th><th>启用</th><th>操作</th></tr></thead>
+              <tbody id="stk-tbody"></tbody>
+            </table>
           </div>
         </div>
       </section>

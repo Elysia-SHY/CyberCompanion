@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -290,8 +289,9 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 	}
 
 	// Clean any internal markup
-	reClean := regexp.MustCompile(`\[EMOJI:[a-zA-Z0-9_]+\]`)
-	replyContent = strings.TrimSpace(reClean.ReplaceAllString(replyContent, ""))
+	// 把模型写的 [表情:xxx] 标记摘出来。标记是给程序看的，用户不该看到它，
+	// 所以必须在发正文之前剥离。逗号另一件事：标记里的键要交给表情派发。
+	replyContent, modelStickerKeys := stickers.ParseMarkers(replyContent)
 
 	// 发送回复：按 QQ 单条长度上限切分后入队，失败自动重试。
 	// 之前是一条 SendTextMessage 直接丢出去，超长会被服务端拒绝且无日志记录。
@@ -299,16 +299,62 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 		SendTextSegmented(senderOpenID, groupOpenID, replyContent, msgID)
 	}
 
-	// Context Scene Sticker Dispatch
-	if cfg.EnableStickers {
-		scene := stickers.DetectScene(cleanText)
-		if scene != "" {
-			stickerBase64 := stickers.GetRandomSceneSticker(scene)
-			if stickerBase64 != "" {
-				SendSticker(senderOpenID, groupOpenID, stickerBase64)
+	dispatchStickers(senderOpenID, groupOpenID, msgID, cleanText, modelStickerKeys)
+}
+
+// dispatchStickers 决定这条回复要发哪些表情。
+//
+// 两条来源、两个开关，互不干扰：
+//   - 模型自主（smart_send）：从回复里摘出的 [表情:xxx] 标记
+//   - 关键词兜底（keyword_send）：命中场景词表就补一张
+//
+// 模型已经表达了意图时就不再叠加关键词兜底 —— 一条回复里莫名冒出两张表情
+// 比一张都不发更让人困惑。
+func dispatchStickers(sender, group, msgID, userText string, modelKeys []string) {
+	// 总开关：config.json 的 enable_stickers=false 时整条路径都短路，
+	// 比逐条改配置更省事，也兼容历史版本的单一开关。
+	if !config.Get().EnableStickers {
+		return
+	}
+	settings := stickers.CurrentSettings()
+	if !settings.SmartSend && !settings.KeywordSend {
+		return
+	}
+
+	limit := settings.MaxPerReply
+	if limit <= 0 {
+		limit = 1
+	}
+
+	sent := 0
+	send := func(key string) {
+		p, err := stickers.Sendable(key)
+		if err != nil {
+			AddLog("[Sticker] 跳过 %q: %v", key, err)
+			return
+		}
+		AddLog("[Sticker] 发送 %s", p.Describe())
+		SendSticker(sender, group, msgID, p)
+		sent++
+	}
+
+	if settings.SmartSend {
+		for _, key := range modelKeys {
+			if sent >= limit {
+				break
 			}
+			send(key)
 		}
 	}
+	if sent > 0 || !settings.KeywordSend {
+		return
+	}
+
+	scene := stickers.DetectScene(userText)
+	if scene == "" {
+		return
+	}
+	send(scene)
 }
 
 // sendThinking 在真正调用大模型之前给用户一个即时反馈。
@@ -348,6 +394,11 @@ func executeLLMChat(target replyTarget, sessionKey, userText string, imageURLs [
 	} else {
 		sysPrompt = activePrompt + "\n\n【权限状态：当前对话者为普通访客】\n正常聊天，严禁透露底层硬件控制或执行管理指令。"
 	}
+
+	// 表情协议：只教模型「怎么表达想要一张表情」，
+	// 真正发哪张由本地表情库决定，因此模型编不出库外的内容。
+	// 关掉智能发表情、或库里没有可用表情时，这里返回空串。
+	sysPrompt += stickers.PromptHint()
 
 	cfg := config.Get()
 
@@ -424,34 +475,74 @@ func executeLLMChat(target replyTarget, sessionKey, userText string, imageURLs [
 // streamChat 边接收边发送。
 // 采用「累积到阈值就补发一段」而不是逐 token 发送：QQ 官方 API 不支持编辑已发消息，
 // 只能追加，过于频繁会被判刷屏。
+//
+// 流式还额外承担一件事：把 [表情:xxx] 标记从用户可见的文本里摘掉。
+// 标记可能被切成两块先后到达（"[表" + "情:love]"），所以不能等收完再正则一把梭，
+// 必须用一个会「扣住疑似未写完的尾巴」的增量过滤器（stickers.MarkerFilter）。
 func streamChat(target replyTarget, messages []llm.Message) (string, error) {
 	var (
 		mu       sync.Mutex
-		full     strings.Builder
-		sent     int
+		full     strings.Builder // 模型原始输出，含标记
+		visible  strings.Builder // 摘掉标记后、真正发给用户的正文
+		sent     int             // visible 里已经发出去的字节数
 		lastSent time.Time
+		filter   = stickers.NewMarkerFilter()
 	)
+
+	// flush 从 visible 里切一段发出去。force 用于收尾补发尾段。
+	flush := func(force bool) {
+		pending := visible.Len() - sent
+		if pending <= 0 {
+			return
+		}
+		if !force {
+			enough := pending >= streamMaxFlushChars ||
+				(pending >= streamFlushMinChars && time.Since(lastSent) >= streamFlushInterval)
+			if !enough {
+				return
+			}
+		}
+		part := visible.String()[sent:]
+		sent = visible.Len()
+		lastSent = time.Now()
+		SendTextSegmented(target.Sender, target.Group, part, target.MsgID)
+	}
 
 	reply, err := llm.CallLLMStream(messages, func(delta string) {
 		mu.Lock()
 		defer mu.Unlock()
 		full.WriteString(delta)
-		pending := full.Len() - sent
-		if pending >= streamMaxFlushChars || (pending >= streamFlushMinChars && time.Since(lastSent) >= streamFlushInterval) {
-			part := full.String()[sent:]
-			sent = full.Len()
-			lastSent = time.Now()
-			SendTextSegmented(target.Sender, target.Group, part, target.MsgID)
+		if out := filter.Feed(delta); out != "" {
+			visible.WriteString(out)
 		}
+		flush(false)
 	})
 
 	mu.Lock()
 	defer mu.Unlock()
-	// 补发尾部残留（正常结束或中途出错都适用，避免丢最后一段）
-	if rest := full.Len() - sent; rest > 0 {
-		SendTextSegmented(target.Sender, target.Group, full.String()[sent:], "")
+
+	// 服务端忽略 stream 参数、直接回整段 JSON 时（readNonStreamFallback），
+	// onDelta 一次都不会被调用。此时必须把整段正文补发出去，
+	// 否则流式开关会让回复彻底消失（历史版本的静默丢消息）。
+	if visible.Len() == 0 && reply != "" {
+		if out := filter.Feed(reply); out != "" {
+			visible.WriteString(out)
+		}
 	}
-	return reply, err
+	if rest := filter.Flush(); rest != "" {
+		visible.WriteString(rest)
+	}
+	flush(true)
+
+	keys := filter.Keys()
+
+	// 表情要等正文发完再发：图还没生成完就抢着发表情，像是在打断自己说话。
+	// 这里单独起协程，避免发送队列的限速把流式的收尾拖慢。
+	if len(keys) > 0 {
+		go dispatchStickers(target.Sender, target.Group, "", "", keys)
+	}
+
+	return visible.String(), err
 }
 
 // ─── WebSocket Engine ────────────────────────────────────────────────────────

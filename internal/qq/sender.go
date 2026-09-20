@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"cybercompanion/internal/config"
+	"cybercompanion/internal/stickers"
 )
 
 // ─── 出站发送队列 ──────────────────────────────────────────────────────────────
@@ -38,13 +39,13 @@ const (
 
 // outboundMsg 描述一条待发送的出站消息。
 type outboundMsg struct {
-	Target    string    // 私聊为 user openid，群聊为 member openid
-	Group     string    // 群 openid，私聊时为空
-	Content   string    // 文本内容
-	MsgID     string    // 被动回复时的引用消息 ID
-	Sticker   string    // 表情包 base64，非空时走媒体通道
-	Attempts  int       // 已尝试次数
-	notBefore time.Time // 退避到期时间
+	Target    string                    // 私聊为 user openid，群聊为 member openid
+	Group     string                    // 群 openid，私聊时为空
+	Content   string                    // 文本内容
+	MsgID     string                    // 被动回复时的引用消息 ID
+	Sticker   *stickers.SendPayload     // 非空时走媒体通道
+	Attempts  int                       // 已尝试次数
+	notBefore time.Time                 // 退避到期时间
 }
 
 var (
@@ -132,8 +133,8 @@ func sendWorker(ch chan *outboundMsg, stop chan struct{}) {
 
 // sendOnce 执行一次真实投递。抽成变量是为了让测试能替换掉网络调用。
 var sendOnce = func(m *outboundMsg) error {
-	if m.Sticker != "" {
-		return SendStickerMedia(m.Target, m.Group, m.Sticker)
+	if m.Sticker != nil {
+		return SendStickerMedia(m.Target, m.Group, m.MsgID, m.Sticker)
 	}
 	return SendTextMessage(m.Target, m.Group, m.Content, m.MsgID)
 }
@@ -204,10 +205,7 @@ func SendTextSegmented(target, group, content, msgID string) {
 	}
 }
 
-// SendSticker 异步发送表情包（入队，失败自动重试）。
-func SendSticker(target, group, base64Data string) {
-	enqueue(&outboundMsg{Target: target, Group: group, Sticker: base64Data})
-}
+// SendSticker / SendStickerMedia 已迁到 sticker.go（两步式富媒体实现）。
 
 // ─── 底层单次发送 ──────────────────────────────────────────────────────────────
 
@@ -267,40 +265,4 @@ func SendTextMessage(targetOpenID string, groupOpenID string, content, msgID str
 	}
 	defer resp.Body.Close()
 	return checkHTTPResponse(resp.StatusCode, resp.Body, "QQ 消息接口")
-}
-
-// SendStickerMedia 发送一条图片表情（同步、单次，不含重试）。
-func SendStickerMedia(targetOpenID string, groupOpenID string, base64Data string) error {
-	auth, err := authHeader()
-	if err != nil {
-		return err
-	}
-	cfg := config.Get()
-	var url string
-	if groupOpenID != "" {
-		url = fmt.Sprintf("https://api.sgroup.qq.com/v2/groups/%s/files", groupOpenID)
-	} else {
-		url = fmt.Sprintf("https://api.sgroup.qq.com/v2/users/%s/files", targetOpenID)
-	}
-
-	payload := map[string]interface{}{
-		"file_type":    1,
-		"srv_send_msg": true,
-		"file_data":    base64Data,
-	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", auth)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Union-Appid", cfg.QQAppID)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return checkHTTPResponse(resp.StatusCode, resp.Body, "QQ 媒体接口")
 }

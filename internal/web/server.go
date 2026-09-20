@@ -68,6 +68,14 @@ func NewServer(port int, bot BotService) (*Server, *http.Server, error) {
 	mux.Handle("/api/logs", requireAuth(http.HandlerFunc(s.handleLogs)))
 	mux.Handle("/api/restart", requireAuth(http.HandlerFunc(s.handleRestart)))
 
+	// 表情包与图床管理（requireAuth 已包裹，未登录不可读写）
+	mux.Handle("/api/stickers", requireAuth(http.HandlerFunc(s.handleStickers)))
+	mux.Handle("/api/stickers/settings", requireAuth(http.HandlerFunc(s.handleStickerSettings)))
+	mux.Handle("/api/stickers/scenes", requireAuth(http.HandlerFunc(s.handleStickerScenes)))
+	mux.Handle("/api/stickers/upload", requireAuth(http.HandlerFunc(s.handleStickerUpload)))
+	mux.Handle("/api/stickers/host-test", requireAuth(http.HandlerFunc(s.handleStickerHostTest)))
+	mux.Handle("/api/stickers/media/", requireAuth(http.HandlerFunc(s.handleStickerMedia)))
+
 	// 健康检查：不含任何敏感信息，供 systemd / Docker / 容器编排探针使用
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/api/health", s.handleHealthz)

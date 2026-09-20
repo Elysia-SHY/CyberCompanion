@@ -18,6 +18,7 @@ import (
 	"cybercompanion/internal/config"
 	"cybercompanion/internal/hal"
 	"cybercompanion/internal/qq"
+	"cybercompanion/internal/stickers"
 	"cybercompanion/internal/web"
 )
 
@@ -110,6 +111,12 @@ func main() {
 
 	// 会话记忆持久化：进程重启后仍记得之前聊过什么
 	qq.StartSessionStore(rootCtx, config.ConfigDir())
+
+	// 3.5 初始化表情库（图床 + 本地表情）。失败不致命：机器人照常运行，
+	// 只是表情功能暂时不可用。首次运行会把内置表情解压到配置目录。
+	if err := stickers.Load(config.ConfigDir()); err != nil {
+		qq.AddLog("[Stickers] ⚠️ 表情库初始化失败，表情功能暂不可用: %v", err)
+	}
 
 	// 4. Start QQ Bot Gateway Loop
 	qq.AddLog("[QQ Bot] 正在初始化 QQ 官方机器人网关引擎...")

@@ -30,7 +30,8 @@ document.addEventListener('DOMContentLoaded', () => {
       overview: '仪表盘概览',
       persona: '灵魂与人设',
       config: '系统与模型配置',
-      logs: '实时运行日志'
+      logs: '实时运行日志',
+      stickers: '表情包与图床'
     };
     pageTitle.textContent = titles[tabId] || '控制台';
 
@@ -40,6 +41,8 @@ document.addEventListener('DOMContentLoaded', () => {
       fetchConfig();
     } else if (tabId === 'persona') {
       fetchPresets();
+    } else if (tabId === 'stickers') {
+      fetchStickers();
     }
   }
 
@@ -653,6 +656,291 @@ document.addEventListener('DOMContentLoaded', () => {
       // 版本号拿不到就保留静态占位，不影响面板功能
     }
   })();
+
+  // ── 表情包与图床 ──────────────────────────────────────────────
+  let stkScenes = [];
+
+  function fillSceneSelect(sel, selected) {
+    sel.innerHTML = '';
+    stkScenes.forEach(sc => {
+      const o = document.createElement('option');
+      o.value = sc.scene;
+      o.textContent = (sc.label && sc.label !== sc.scene ? sc.label + ' (' + sc.scene + ')' : sc.scene) + ' · ' + sc.count;
+      if (sc.scene === selected) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+
+  async function fetchStickers() {
+    try {
+      const resp = await fetch('/api/stickers');
+      if (!resp.ok) return;
+      const d = await resp.json();
+
+      // 概览
+      const hs = d.hostStatus || {};
+      const hostEl = document.getElementById('stk-host-status');
+      if (hostEl) {
+        if (hs.ready) hostEl.textContent = '✅ 已配置 (' + (hs.provider || '') + ')';
+        else hostEl.textContent = '⚠️ 未配置（将仅使用本地表情）';
+      }
+      const countEl = document.getElementById('stk-count');
+      if (countEl) countEl.textContent = (d.items ? d.items.length : 0) + ' 张';
+
+      // 设置表单
+      const s = d.settings || {};
+      const modeEl = document.getElementById('stk-mode');
+      if (modeEl && s.mode) modeEl.value = s.mode;
+      const maxEl = document.getElementById('stk-max');
+      if (maxEl) maxEl.value = (s.max_per_reply > 0 ? s.max_per_reply : 1);
+      const smartEl = document.getElementById('stk-smart');
+      if (smartEl) smartEl.checked = !!s.smart_send;
+      const kwEl = document.getElementById('stk-keyword');
+      if (kwEl) kwEl.checked = !!s.keyword_send;
+      const cdnEl = document.getElementById('stk-cdn');
+      if (cdnEl) cdnEl.value = s.cdn_prefix || '';
+
+      // 图床配置表单
+      const ih = s.image_host || {};
+      setVal('stk-ih-url', ih.upload_url);
+      setVal('stk-ih-method', ih.method || 'POST');
+      setVal('stk-ih-field', ih.field_name);
+      setVal('stk-ih-authmode', ih.auth_mode);
+      setVal('stk-ih-token', ''); // 密钥不回显，留空表示不修改
+      setVal('stk-ih-path', ih.result_path);
+      setVal('stk-ih-base', ih.public_base);
+
+      // 场景与下拉
+      stkScenes = d.scenes || [];
+      fillSceneSelect(document.getElementById('stk-up-scene'), '');
+      fillSceneSelect(document.getElementById('stk-add-scene'), '');
+
+      // 列表
+      const tbody = document.getElementById('stk-tbody');
+      tbody.innerHTML = '';
+      (d.items || []).forEach(it => tbody.appendChild(renderStickerRow(it)));
+    } catch (err) {
+      showToast('获取表情数据失败: ' + err.message);
+    }
+  }
+
+  function renderStickerRow(it) {
+    const tr = document.createElement('tr');
+    const preview = document.createElement('td');
+    if (it.source === 'url' && it.url) {
+      const img = document.createElement('img');
+      img.src = it.url; img.className = 'stk-thumb'; img.loading = 'lazy';
+      img.onerror = () => { img.replaceWith(document.createTextNode('—')); };
+      preview.appendChild(img);
+    } else if (it.file) {
+      const img = document.createElement('img');
+      img.src = '/api/stickers/media/' + it.file; img.className = 'stk-thumb'; img.loading = 'lazy';
+      img.onerror = () => { img.replaceWith(document.createTextNode('—')); };
+      preview.appendChild(img);
+    } else {
+      preview.textContent = '—';
+    }
+
+    tr.appendChild(preview);
+    tr.appendChild(cell(it.id));
+    tr.appendChild(cell(it.scene));
+    tr.appendChild(cell(it.source === 'url' ? '直链' : '本地'));
+
+    const srcCell = document.createElement('td');
+    const srcText = it.source === 'url' ? (it.url || '') : (it.file || '');
+    const srcA = document.createElement('div');
+    srcA.className = 'stk-src';
+    srcA.textContent = srcText;
+    srcCell.appendChild(srcA);
+    tr.appendChild(srcCell);
+
+    tr.appendChild(cell(it.note || ''));
+
+    // 启用开关
+    const enCell = document.createElement('td');
+    const enChk = document.createElement('input');
+    enChk.type = 'checkbox';
+    enChk.checked = !!it.enabled;
+    enChk.addEventListener('change', () => updateSticker(it.id, { enabled: enChk.checked }));
+    enCell.appendChild(enChk);
+    tr.appendChild(enCell);
+
+    // 操作
+    const opCell = document.createElement('td');
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn btn-danger btn-sm';
+    delBtn.textContent = '删除';
+    delBtn.addEventListener('click', () => deleteSticker(it.id));
+    opCell.appendChild(delBtn);
+    tr.appendChild(opCell);
+
+    return tr;
+  }
+
+  function cell(text) {
+    const td = document.createElement('td');
+    td.textContent = text;
+    return td;
+  }
+
+  function setVal(id, v) {
+    const el = document.getElementById(id);
+    if (el && v !== undefined && v !== null) el.value = v;
+  }
+
+  function collectStickerSettings() {
+    return {
+      mode: document.getElementById('stk-mode').value,
+      max_per_reply: parseInt(document.getElementById('stk-max').value, 10) || 1,
+      smart_send: document.getElementById('stk-smart').checked,
+      keyword_send: document.getElementById('stk-keyword').checked,
+      cdn_prefix: document.getElementById('stk-cdn').value.trim(),
+      image_host: {
+        provider: document.getElementById('stk-ih-provider').value || 'custom',
+        upload_url: document.getElementById('stk-ih-url').value.trim(),
+        method: document.getElementById('stk-ih-method').value || 'POST',
+        field_name: document.getElementById('stk-ih-field').value.trim(),
+        auth_mode: document.getElementById('stk-ih-authmode').value || 'none',
+        token: document.getElementById('stk-ih-token').value.trim(),
+        result_path: document.getElementById('stk-ih-path').value.trim(),
+        public_base: document.getElementById('stk-ih-base').value.trim()
+      }
+    };
+  }
+
+  async function saveStickerSettings() {
+    try {
+      const resp = await fetch('/api/stickers/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(collectStickerSettings())
+      });
+      if (resp.ok) {
+        showToast('🎉 表情规则与图床配置已保存');
+        fetchStickers();
+      } else {
+        showToast('保存失败: ' + await resp.text());
+      }
+    } catch (err) {
+      showToast('网络错误: ' + err.message);
+    }
+  }
+
+  document.getElementById('btn-save-stk-settings').addEventListener('click', saveStickerSettings);
+  document.getElementById('btn-save-stk-host').addEventListener('click', saveStickerSettings);
+
+  async function testStickerHost() {
+    const resultEl = document.getElementById('stk-host-test-result');
+    resultEl.textContent = '测试中...';
+    try {
+      const resp = await fetch('/api/stickers/host-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_host: collectStickerSettings().image_host })
+      });
+      const d = await resp.json();
+      if (d.error) {
+        resultEl.innerHTML = '❌ 失败 (' + (d.status_code || 0) + ')：' + escapeHtml(d.error) +
+          '<br><small>原始响应：' + escapeHtml(d.raw_body || '(空)') + '</small>';
+      } else {
+        resultEl.innerHTML = '✅ 成功 (' + (d.elapsed_ms || 0) + 'ms)：<a href="' + escapeHtml(d.url) +
+          '" target="_blank" class="link">' + escapeHtml(d.url) + '</a>' +
+          (d.raw_url && d.raw_url !== d.url ? '<br><small>原始：' + escapeHtml(d.raw_url) + '</small>' : '');
+      }
+    } catch (err) {
+      resultEl.textContent = '网络错误: ' + err.message;
+    }
+  }
+  document.getElementById('btn-stk-host-test').addEventListener('click', testStickerHost);
+
+  async function uploadStickers() {
+    const files = document.getElementById('stk-up-files').files;
+    if (!files || files.length === 0) {
+      showToast('⚠️ 请先选择图片');
+      return;
+    }
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    fd.append('scene', document.getElementById('stk-up-scene').value);
+    fd.append('note', document.getElementById('stk-up-note').value.trim());
+    fd.append('target', document.getElementById('stk-up-target').value);
+    fd.append('drop_local', document.getElementById('stk-up-drop').checked ? '1' : '0');
+    try {
+      const resp = await fetch('/api/stickers/upload', { method: 'POST', body: fd });
+      const d = await resp.json();
+      if (resp.ok) {
+        const n = (d.created || []).length;
+        let msg = '✅ 成功上传 ' + n + ' 张';
+        if (d.warnings && d.warnings.length) msg += '（' + d.warnings.length + ' 个跳过）';
+        showToast(msg);
+        fetchStickers();
+      } else {
+        showToast('上传失败: ' + JSON.stringify(d));
+      }
+    } catch (err) {
+      showToast('网络错误: ' + err.message);
+    }
+  }
+  document.getElementById('btn-stk-upload').addEventListener('click', uploadStickers);
+
+  async function addDirectSticker() {
+    const url = document.getElementById('stk-add-url').value.trim();
+    if (!url) { showToast('⚠️ 请填写图床直链'); return; }
+    const body = {
+      id: document.getElementById('stk-add-id').value.trim(),
+      scene: document.getElementById('stk-add-scene').value,
+      source: 'url',
+      url: url,
+      enabled: true
+    };
+    try {
+      const resp = await fetch('/api/stickers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (resp.ok) {
+        showToast('✅ 已添加直链表情');
+        document.getElementById('stk-add-url').value = '';
+        document.getElementById('stk-add-id').value = '';
+        fetchStickers();
+      } else {
+        showToast('添加失败: ' + await resp.text());
+      }
+    } catch (err) {
+      showToast('网络错误: ' + err.message);
+    }
+  }
+  document.getElementById('btn-stk-add').addEventListener('click', addDirectSticker);
+
+  async function updateSticker(id, fields) {
+    try {
+      const resp = await fetch('/api/stickers', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ id }, fields))
+      });
+      if (!resp.ok) showToast('更新失败: ' + await resp.text());
+      else fetchStickers();
+    } catch (err) {
+      showToast('网络错误: ' + err.message);
+    }
+  }
+
+  async function deleteSticker(id) {
+    if (!confirm('确定删除表情 ' + id + ' 吗？')) return;
+    try {
+      const resp = await fetch('/api/stickers?id=' + encodeURIComponent(id), { method: 'DELETE' });
+      if (resp.ok) {
+        showToast('🗑️ 已删除 ' + id);
+        fetchStickers();
+      } else {
+        showToast('删除失败: ' + await resp.text());
+      }
+    } catch (err) {
+      showToast('网络错误: ' + err.message);
+    }
+  }
 
   // Init Intervals
   fetchStatus();
