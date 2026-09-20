@@ -905,3 +905,241 @@ textarea.form-control {
   font-size: 12px;
   color: var(--text-dim, #9aa3b2);
 }
+
+/* ─────────────────────────────────────────────────────────────
+   用户与记忆面板（数据概览 / 记忆 / 能力 / 主动消息 / 调试）
+
+   复用既有的卡片、表格与按钮基类，这里只补这个页签特有的排版。
+   ───────────────────────────────────────────────────────────── */
+
+.card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  margin: -6px 0 14px;
+}
+
+.hint code {
+  background: rgba(56, 189, 248, 0.1);
+  color: var(--accent-cyan);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+
+.empty-hint {
+  color: var(--text-sub);
+  text-align: center;
+  padding: 18px 0;
+  font-size: 0.85rem;
+}
+
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.mono-sm {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.74rem;
+  color: var(--text-sub);
+  white-space: nowrap;
+}
+
+/* 数据概览：自适应网格，窄屏自动折行 */
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 12px;
+}
+
+.admin-stat {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px 12px;
+  text-align: center;
+  transition: border-color 0.2s, transform 0.2s;
+}
+
+.admin-stat:hover {
+  border-color: var(--accent-cyan);
+  transform: translateY(-2px);
+}
+
+.admin-stat-value {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-stat-label {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* 行内表单：记忆与调度用 */
+.admin-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-inline-form input,
+.admin-inline-form select {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-main);
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  font-family: inherit;
+  min-width: 120px;
+  flex: 1 1 140px;
+}
+
+.admin-inline-form input:focus,
+.admin-inline-form select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.admin-manual-add {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border-color);
+}
+
+.admin-schedule-form input {
+  flex: 1 1 160px;
+}
+
+.admin-actions {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.role-select {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-main);
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  font-family: inherit;
+}
+
+/* 权限档位徽章：颜色区分高低，一眼能看出谁有特权 */
+.badge-role-owner   { background: rgba(248, 113, 113, 0.16); color: var(--accent-red); }
+.badge-role-admin   { background: rgba(251, 191, 36, 0.16);  color: var(--accent-amber); }
+.badge-role-trusted { background: rgba(56, 189, 248, 0.16);  color: var(--accent-cyan); }
+.badge-role-guest   { background: rgba(100, 116, 139, 0.2);  color: var(--text-sub); }
+.badge-ok           { background: rgba(52, 211, 153, 0.16);  color: var(--accent-green); }
+.badge-warn         { background: rgba(248, 113, 113, 0.16); color: var(--accent-red); }
+
+/* 插件行 */
+.admin-plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-plugin-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.admin-plugin-info { min-width: 0; }
+
+.admin-plugin-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.admin-plugin-desc {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* 开关 */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.switch input { opacity: 0; width: 0; height: 0; }
+
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  background: rgba(100, 116, 139, 0.35);
+  border-radius: 24px;
+  cursor: pointer;
+  transition: background 0.25s;
+}
+
+.switch-slider::before {
+  content: '';
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  top: 3px;
+  background: var(--text-main);
+  border-radius: 50%;
+  transition: transform 0.25s;
+}
+
+.switch input:checked + .switch-slider { background: var(--accent-cyan); }
+.switch input:checked + .switch-slider::before { transform: translateX(20px); }
+
+/* 调试输出 */
+.admin-debug {
+  background: #0a0e16;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.76rem;
+  line-height: 1.7;
+  color: var(--text-muted);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 窄屏：表格横向滚动而不是把列挤成一团 */
+@media (max-width: 768px) {
+  .admin-plugin-row { flex-direction: column; align-items: stretch; }
+  .data-table { display: block; overflow-x: auto; white-space: nowrap; }
+}

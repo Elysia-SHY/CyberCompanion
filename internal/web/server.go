@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"cybercompanion/internal/api"
 	"cybercompanion/internal/config"
 	"cybercompanion/internal/hal"
 	"cybercompanion/internal/llm"
@@ -36,6 +37,12 @@ type BotService interface {
 type Server struct {
 	bot  BotService
 	port int
+	// admin 是可选的扩展管理能力（用户/记忆/统计/插件/调度）。
+	//
+	// 用可选接口而不是扩大 BotService：web 包的测试用的是一个三方法的假实现，
+	// 强行加方法会逼着所有测试跟着改；而现实中「没有数据库」也确实
+	// 只应该让这些端点返回 503，而不是让面板起不来。
+	admin api.AdminService
 }
 
 // NewServer 构造一个 WebUI 服务（不监听端口，便于测试与优雅关闭）。
@@ -46,6 +53,9 @@ func NewServer(port int, bot BotService) (*Server, *http.Server, error) {
 	}
 
 	s := &Server{bot: bot, port: port}
+	if a, ok := bot.(api.AdminService); ok {
+		s.admin = a
+	}
 	mux := http.NewServeMux()
 
 	// 认证相关（无需登录）
@@ -75,6 +85,9 @@ func NewServer(port int, bot BotService) (*Server, *http.Server, error) {
 	mux.Handle("/api/stickers/upload", requireAuth(http.HandlerFunc(s.handleStickerUpload)))
 	mux.Handle("/api/stickers/host-test", requireAuth(http.HandlerFunc(s.handleStickerHostTest)))
 	mux.Handle("/api/stickers/media/", requireAuth(http.HandlerFunc(s.handleStickerMedia)))
+
+	// 管理端点：用户 / 记忆 / 统计 / 插件 / 调度 / 调试
+	s.registerAdminRoutes(mux)
 
 	// 健康检查：不含任何敏感信息，供 systemd / Docker / 容器编排探针使用
 	mux.HandleFunc("/healthz", s.handleHealthz)

@@ -2,13 +2,12 @@ package llm
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"time"
-
-	"cybercompanion/internal/config"
 )
 
 type MessageContentPart struct {
@@ -35,6 +34,16 @@ type ChatRequest struct {
 	Stream bool `json:"stream,omitempty"`
 }
 
+// Usage 是一次调用消耗的 token 数。
+//
+// 各服务商都会在响应里带这个字段，但流式模式下常常缺失 ——
+// 因此消费方必须能处理「拿不到真实用量」的情况，见 estimateUsage。
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type ChatResponse struct {
 	Choices []struct {
 		Message struct {
@@ -43,6 +52,7 @@ type ChatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *Usage `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
@@ -73,57 +83,118 @@ var httpClient = &http.Client{
 // 防止异常端点返回超大内容导致内存暴涨。
 const maxRespBytes = 8 << 20
 
-// CallLLM sends chat messages to configured LLM endpoint.
+// CallLLM sends chat messages to the configured LLM endpoint.
 //
 // 返回的错误统一是 *Error，便于上层判断是否重试、以及给用户看什么。
 // 单次调用不带重试；需要重试请用 CallLLMWithRetry。
+//
+// 多模型路由引入后，这个函数退化为「用默认端点调用」的语法糖，
+// 保持现有调用方零改动；需要指定端点的场合改用 CallEndpoint。
 func CallLLM(messages []Message) (string, error) {
-	cfg := config.Get()
-	if cfg.OneAPIURL == "" {
-		return "", &Error{Kind: KindBadRequest, Detail: "LLM endpoint URL not configured"}
-	}
+	return CallEndpoint(context.Background(), DefaultEndpoint(), messages)
+}
 
-	body, err := buildRequest(cfg.OneAPIURL, cfg.OneAPIToken, cfg.Model, messages, false)
+// doCall 是所有非流式请求的唯一实现路径。
+//
+// 同时回传 token 用量：面板要展示的消耗数据只能在调用点采集，
+// 事后无从回溯（优化建议书第十四节）。
+//
+// ctx 必须一路传到 http 层：此前请求是用 http.NewRequest 构造的，
+// 调用方的超时与取消对它完全无效 —— 一个卡住的上游会一直占着连接，
+// 直到客户端 120 秒的硬超时才断开。优雅关闭时同样无法中断在途请求。
+func doCall(ctx context.Context, ep Endpoint, messages []Message, stream bool) (string, Usage, error) {
+	var noUsage Usage
+
+	body, err := buildRequest(ctx, ep.URL, ep.Token, ep.Model, messages, stream)
 	if err != nil {
-		return "", err
+		return "", noUsage, err
 	}
 
 	resp, err := httpClient.Do(body)
 	if err != nil {
-		return "", classifyNetErr(err)
+		return "", noUsage, classifyNetErr(err)
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxRespBytes))
 	if err != nil {
-		return "", classifyNetErr(err)
+		return "", noUsage, classifyNetErr(err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", classifyHTTPError(resp.StatusCode, string(bodyBytes))
+		return "", noUsage, classifyHTTPError(resp.StatusCode, string(bodyBytes))
 	}
 
 	var chatResp ChatResponse
 	if err := json.Unmarshal(bodyBytes, &chatResp); err != nil {
-		return "", &Error{Kind: KindServer, Status: resp.StatusCode,
+		return "", noUsage, &Error{Kind: KindServer, Status: resp.StatusCode,
 			Detail: "failed to parse LLM response: " + err.Error(), wrapped: err}
 	}
 
 	if chatResp.Error != nil && chatResp.Error.Message != "" {
-		return "", &Error{Kind: KindBadRequest, Status: resp.StatusCode,
+		return "", noUsage, &Error{Kind: KindBadRequest, Status: resp.StatusCode,
 			Detail: "LLM API error: " + chatResp.Error.Message}
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return "", &Error{Kind: KindServer, Status: resp.StatusCode,
+		return "", noUsage, &Error{Kind: KindServer, Status: resp.StatusCode,
 			Detail: "no response choices returned from LLM"}
 	}
 
-	return chatResp.Choices[0].Message.Content, nil
+	usage := noUsage
+	if chatResp.Usage != nil {
+		usage = *chatResp.Usage
+	}
+	return chatResp.Choices[0].Message.Content, usage, nil
+}
+
+// EstimateUsage 在服务端未返回用量时给出估算值。
+//
+// 中文按 1.5 字符/token 估算：这是中英混排文本的常用近似值。
+// 宁可给出「大约多少」也不要显示 0 —— 面板上 token 恒为 0 会让人以为统计坏了。
+func EstimateUsage(messages []Message, reply string) Usage {
+	prompt := 0
+	for _, m := range messages {
+		switch v := m.Content.(type) {
+		case string:
+			prompt += estimateTokens(v)
+		case []MessageContentPart:
+			for _, part := range v {
+				prompt += estimateTokens(part.Text)
+				if part.ImageURL != nil {
+					// 视觉输入各服务商计费口径不同，给一个保守的固定估值
+					prompt += 260
+				}
+			}
+		}
+	}
+	completion := estimateTokens(reply)
+	return Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      prompt + completion,
+	}
+}
+
+// estimateTokens 按字符构成粗略估算 token 数。
+func estimateTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	var han, other int
+	for _, r := range s {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			han++
+		} else {
+			other++
+		}
+	}
+	// 汉字约 1.5 字/token，西文约 4 字符/token
+	return han*2/3 + other/4 + 1
 }
 
 // buildRequest 构造一次 chat 请求，流式与非流式共用。
-func buildRequest(endpoint, token, model string, messages []Message, stream bool) (*http.Request, error) {
+func buildRequest(ctx context.Context, endpoint, token, model string, messages []Message, stream bool) (*http.Request, error) {
 	if model == "" {
 		model = "deepseek-chat"
 	}
@@ -140,7 +211,7 @@ func buildRequest(endpoint, token, model string, messages []Message, stream bool
 		return nil, &Error{Kind: KindBadRequest, Detail: "failed to marshal chat request: " + err.Error(), wrapped: err}
 	}
 
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewBuffer(data))
 	if err != nil {
 		return nil, &Error{Kind: KindBadRequest, Detail: "failed to create http request: " + err.Error(), wrapped: err}
 	}

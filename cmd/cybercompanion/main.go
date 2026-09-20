@@ -15,10 +15,18 @@ import (
 	"syscall"
 	"time"
 
+	"cybercompanion/internal/agent"
 	"cybercompanion/internal/config"
 	"cybercompanion/internal/hal"
+	"cybercompanion/internal/mcp"
+	"cybercompanion/internal/memory"
+	"cybercompanion/internal/persona"
+	"cybercompanion/internal/plugin"
+	"cybercompanion/internal/provider"
 	"cybercompanion/internal/qq"
+	"cybercompanion/internal/scheduler"
 	"cybercompanion/internal/stickers"
+	"cybercompanion/internal/store"
 	"cybercompanion/internal/web"
 )
 
@@ -109,10 +117,114 @@ func main() {
 	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 会话记忆持久化：进程重启后仍记得之前聊过什么
+	// 3.1 持久层（SQLite）。
+	//
+	// 数据库并非「必需」：它承载长期记忆、用户档案与统计这些增强能力，
+	// 而聊天本身不需要它。因此打开失败只降级不退出 —— 一个磁盘写满的
+	// 设备仍应该能回话，而不是彻底不起。
+	db, dbErr := store.Open(config.ConfigDir())
+	if dbErr != nil {
+		qq.AddLog("[Store] ⚠️ 持久层不可用，长期记忆 / 用户档案 / 调用统计已停用: %v", dbErr)
+	} else {
+		qq.AddLog("[Store] 持久层就绪: %s（结构版本 v%d）", store.Path(), db.SchemaVersion())
+		defer func() { _ = store.Close() }()
+
+		// 老配置里的主人列表导入数据库：用户表是新的权威来源，
+		// 但绝不能因此把老用户的主人身份弄丢。
+		if n, err := db.ImportOwners(cfg.Owners); err != nil {
+			qq.AddLog("[Store] ⚠️ 导入主人列表失败: %v", err)
+		} else if n > 0 {
+			qq.AddLog("[Store] 已从配置导入 %d 位主人到用户表", n)
+		}
+
+		// 内置人格落库：只在缺失时写入，不覆盖用户改过的提示词
+		if n, err := db.SeedPersonas(builtinPersonaSeeds()); err != nil {
+			qq.AddLog("[Persona] ⚠️ 写入内置人格失败: %v", err)
+		} else if n > 0 {
+			qq.AddLog("[Persona] 已写入 %d 个内置人格", n)
+		}
+	}
+
+	// 3.2 模型路由（多 Provider）
+	var recorder provider.UsageRecorder
+	if db != nil {
+		// 必须显式判断：把 nil 的 *store.DB 塞进接口会得到一个「非nil接口」，
+		// 后续调用会以空指针 panic 收场。
+		recorder = db
+	}
+	providers := provider.NewRegistry(recorder)
+	if ep, err := providers.Resolve(provider.PurposeChat); err == nil {
+		qq.AddLog("[Provider] 对话模型: %s（%s）", ep.Model, ep.Name)
+	} else {
+		qq.AddLog("[Provider] ⚠️ %v", err)
+	}
+
+	// 3.3 长期记忆系统
+	memCfg := memory.Config{
+		Enabled:          cfg.Memory.MemoryEnabled(),
+		RecallLimit:      cfg.Memory.RecallLimitOr(),
+		ExtractEnabled:   cfg.Memory.MemoryExtractEnabled(),
+		ExtractBatch:     cfg.Memory.ExtractBatchOr(),
+		SummaryThreshold: cfg.Memory.SummaryThresholdOr(),
+		MaxPerOwner:      cfg.Memory.MaxPerOwnerOr(),
+		MinImportance:    cfg.Memory.MinImportanceOr(),
+	}
+	memMgr := memory.NewManager(db, memCfg, provider.NewExtractor(providers))
+	qq.SetMemory(memMgr)
+	if memMgr.Available() {
+		total, owners, _ := memMgr.Stats()
+		qq.AddLog("[Memory] 记忆系统就绪：已有 %d 条记忆，覆盖 %d 个对话边界", total, owners)
+	} else {
+		qq.AddLog("[Memory] 记忆系统未启用（可在配置的 memory.enabled 打开）")
+	}
+
+	// 3.4 能力插件
+	plugins := plugin.NewRegistry(db)
+	plugins.Register(plugin.NewDicePlugin())
+	plugins.Register(plugin.DevicePlugin{})
+	plugins.Register(plugin.NewExecPlugin())
+	plugins.Register(plugin.NewRecallPlugin(memMgr))
+	plugins.Register(plugin.NewForgetPlugin(memMgr))
+	qq.AddLog("[Plugin] 已注册能力: %v", plugins.SortedNames())
+
+	// 3.5 外部 MCP 能力（优化建议书第七节）
+	//
+	// 接入发生在内置插件注册之后：这样外部服务若与内置能力重名，
+	// 会被识别为冲突而跳过，而不是悄悄顶掉 device 或 exec。
+	mcpMgr := mcp.NewManager(qq.AddLog)
+	qq.SetMCPSource(mcpMgr.Status)
+	defer func() { _ = mcpMgr.Close() }()
+
+	mcpMgr.StartAll(rootCtx, cfg.MCP, plugins)
+	if servers, tools := mcpMgr.Count(); servers > 0 {
+		qq.AddLog("[MCP] 外部能力接入完成：%d 个服务 / %d 个工具，已并入统一能力清单", servers, tools)
+	}
+
+	// 3.6 对话引擎（记忆 + 权限 + 能力 + 模型的编排）
+	engine := agent.NewEngine(providers, plugins, memMgr)
+	qq.SetEngine(engine)
+
+	// 3.7 会话记忆持久化：进程重启后仍记得之前聊过什么
 	qq.StartSessionStore(rootCtx, config.ConfigDir())
 
-	// 3.5 初始化表情库（图床 + 本地表情）。失败不致命：机器人照常运行，
+	// 3.8 主动消息调度（定时提醒 / 天气播报 / 日程推送）
+	sched := scheduler.New(db, qq.SchedulerNotifier{})
+	sched.Register(scheduler.NewModelGenerator(providers))
+	sched.Register(scheduler.NewPluginGenerator(qq.PluginCallerForScheduler{}))
+	if sched.Available() && cfg.Schedule.ScheduleEnabled() {
+		sched.Start(rootCtx)
+		if tasks, err := db.ListSchedules(""); err == nil {
+			qq.AddLog("[Schedule] 主动消息调度就绪：%d 个任务，轮询间隔 %d 秒", len(tasks), cfg.Schedule.CheckIntervalOr())
+		}
+		if start, end, ok := cfg.Schedule.QuietHours(); ok {
+			qq.AddLog("[Schedule] 免打扰时段：%02d:00 - %02d:00", start, end)
+		}
+	}
+
+	// 3.9 记忆与数据的周期性维护
+	startMaintenance(rootCtx, memMgr, db)
+
+	// 3.10 初始化表情库（图床 + 本地表情）。失败不致命：机器人照常运行，
 	// 只是表情功能暂时不可用。首次运行会把内置表情解压到配置目录。
 	if err := stickers.Load(config.ConfigDir()); err != nil {
 		qq.AddLog("[Stickers] ⚠️ 表情库初始化失败，表情功能暂不可用: %v", err)
@@ -157,6 +269,9 @@ func main() {
 
 	// 再停网关：cancel 会触发 WS Close 帧并让重连循环退出
 	cancel()
+
+	// 停主动消息调度：避免关闭过程中又推出一条消息
+	sched.Stop()
 
 	// 排空发送队列，最后落盘会话
 	qq.StopSender()
@@ -307,4 +422,83 @@ func mhzOrNA(n int) string {
 		return "未提供"
 	}
 	return strconv.Itoa(n) + " MHz"
+}
+
+// builtinPersonaSeeds 把源码里的内置人格预设转成可落库的种子数据。
+//
+// 预设仍写在 persona 包里（它们随版本迭代，属于代码而非用户数据），
+// 落库之后用户就能在它的基础上新增、修改出「某个群专用」「某个人专用」的人格。
+func builtinPersonaSeeds() []store.SeedPersona {
+	presets := persona.GetAllPresets()
+	out := make([]store.SeedPersona, 0, len(presets))
+	for _, p := range presets {
+		out = append(out, store.SeedPersona{
+			ID:          p.ID,
+			Name:        p.Name,
+			Title:       p.Title,
+			Description: p.Description,
+			Prompt:      p.Prompt,
+			AvatarStyle: p.AvatarStyle,
+		})
+	}
+	return out
+}
+
+// maintenanceInterval 是数据维护的周期。
+//
+// 取 6 小时而不是更短：维护动作都要全表扫描，而低功耗设备的 IO 与电量
+// 都是稀缺资源；这些数据的时效性要求也远没有那么高。
+const maintenanceInterval = 6 * time.Hour
+
+// startMaintenance 启动周期性数据维护。
+//
+// 三件事，都是「不做也不会立刻出问题、但长期必然出问题」的那一类：
+//   - 记忆衰减：让陈年旧事自然退场，避免记忆库只增不减、检索里全是垃圾
+//   - 消息流水裁剪：原始对话只是提炼记忆的原料，提炼过就不必长期保留
+//   - 过期访客清理：只清「没有任何权限」的访客，避免误删被授权的账号
+func startMaintenance(ctx context.Context, mem *memory.Manager, db *store.DB) {
+	if db == nil {
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(maintenanceInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
+			if mem != nil {
+				if decayed, pruned, err := mem.Maintain(time.Now()); err != nil {
+					qq.AddLog("[Memory] 记忆维护失败: %v", err)
+				} else if decayed > 0 || pruned > 0 {
+					qq.AddLog("[Memory] 记忆维护完成：衰减 %d 条，淘汰 %d 条", decayed, pruned)
+				}
+			}
+
+			if n, err := db.PruneMessages(500); err != nil {
+				qq.AddLog("[Store] 消息流水裁剪失败: %v", err)
+			} else if n > 0 {
+				qq.AddLog("[Store] 已裁剪 %d 条过期消息流水", n)
+			}
+
+			// 30 天未活跃且没有任何权限的访客档案可以安全清理
+			if n, err := db.PurgeInactiveUsers(time.Now().AddDate(0, 0, -30)); err != nil {
+				qq.AddLog("[Store] 过期用户清理失败: %v", err)
+			} else if n > 0 {
+				qq.AddLog("[Store] 已清理 %d 个过期访客档案", n)
+			}
+
+			// 调用统计保留 90 天：再久的数据对面板趋势图没有意义
+			if n, err := db.PruneUsage(time.Now().AddDate(0, 0, -90)); err != nil {
+				qq.AddLog("[Store] 统计清理失败: %v", err)
+			} else if n > 0 {
+				qq.AddLog("[Store] 已清理 %d 条过期调用统计", n)
+			}
+		}
+	}()
 }

@@ -2,12 +2,11 @@ package llm
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
-
-	"cybercompanion/internal/config"
 )
 
 // StreamChunk 是 SSE 流里的一帧增量数据。
@@ -35,30 +34,18 @@ const streamMaxLine = 1 << 20
 // 返回值是完整拼接后的文本；即使中途出错，已收到的内容也会一并返回，
 // 避免「生成了 80% 但因为网络抖动整段丢弃」。
 //
-// 若服务端不支持 stream 参数（部分网关会忽略它并直接返回整段 JSON），
-// 这里会自动回退到非流式解析，保证功能不退化。
+// 与 CallLLM 同理，这是「用默认端点流式调用」的语法糖；
+// 需要指定端点的场合改用 CallEndpointStream。
 func CallLLMStream(messages []Message, onDelta func(string)) (string, error) {
-	cfg := config.Get()
-	if cfg.OneAPIURL == "" {
-		return "", &Error{Kind: KindBadRequest, Detail: "LLM endpoint URL not configured"}
-	}
+	return CallEndpointStream(context.Background(), DefaultEndpoint(), messages, onDelta)
+}
 
-	req, err := buildRequest(cfg.OneAPIURL, cfg.OneAPIToken, cfg.Model, messages, true)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", classifyNetErr(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return "", classifyHTTPError(resp.StatusCode, string(raw))
-	}
-
+// consumeStream 解析已经建立的 SSE 响应体。
+//
+// 抽成独立函数是为了让默认端点与自定义端点走同一条解析路径 ——
+// 流式解析里塞满了「单帧坏了不能中断整段生成」这类细节，
+// 一旦有两份实现，迟早只会修好其中一份。
+func consumeStream(resp *http.Response, onDelta func(string)) (string, error) {
 	// 服务端忽略 stream 参数时返回的是普通 JSON，不是 SSE
 	if ct := resp.Header.Get("Content-Type"); ct != "" && strings.Contains(ct, "application/json") {
 		return readNonStreamFallback(resp.Body)

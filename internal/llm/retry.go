@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -197,7 +198,7 @@ func BreakerState() (open bool, retryAfter time.Duration) {
 //
 // 重试只对「可重试」错误生效：401/403 这类凭据问题重试一百次也是失败，
 // 只会白白消耗时间与配额。
-func CallLLMWithRetry(messages []Message, maxAttempts int) (string, error) {
+func CallLLMWithRetry(ctx context.Context, messages []Message, maxAttempts int) (string, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = defaultMaxAttempts
 	}
@@ -210,7 +211,7 @@ func CallLLMWithRetry(messages []Message, maxAttempts int) (string, error) {
 		}
 
 		countRequest()
-		reply, err := CallLLM(messages)
+		reply, err := CallEndpoint(ctx, DefaultEndpoint(), messages)
 		if err == nil {
 			recordSuccess()
 			return reply, nil

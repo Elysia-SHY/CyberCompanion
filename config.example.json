@@ -18,5 +18,70 @@
   "enable_stickers": true,
   "enable_exec": false,
   "exec_whitelist": [],
-  "stream_reply": true
+  "stream_reply": true,
+
+  "providers": [
+    {
+      "name": "deepseek",
+      "url": "https://api.deepseek.com/v1/chat/completions",
+      "token": "你的大模型API_KEY",
+      "default_model": "deepseek-chat",
+      "models": {
+        "complex": "deepseek-reasoner",
+        "extract": "deepseek-chat"
+      }
+    }
+  ],
+
+  "model_routing": {
+    "chat": "deepseek/deepseek-chat",
+    "complex": "deepseek/deepseek-reasoner",
+    "code": "deepseek/deepseek-chat",
+    "vision": "deepseek/deepseek-chat",
+    "extract": "deepseek/deepseek-chat"
+  },
+
+  "memory": {
+    "enabled": true,
+    "recall_limit": 6,
+    "extract_enabled": true,
+    "extract_batch": 8,
+    "summary_threshold": 40,
+    "max_per_owner": 300,
+    "min_importance": 0.15,
+    "inject_prompt": true
+  },
+
+  "groups": {
+    "enabled": true,
+    "reply_chance": 20,
+    "always_reply_at": true,
+    "isolate_memory": true,
+    "max_replies_per_minute": 6
+  },
+
+  "schedule": {
+    "enabled": true,
+    "check_interval_sec": 300,
+    "quiet_hours_start": 22,
+    "quiet_hours_end": 8
+  },
+
+  "mcp": {
+    "enabled": false,
+    "init_timeout_sec": 20,
+    "call_timeout_sec": 45,
+    "max_tools_per_server": 24,
+    "servers": [
+      {
+        "name": "filesystem",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/sdcard/Download"],
+        "prefix": "fs",
+        "min_role": "admin",
+        "max_tools": 12,
+        "enabled": false
+      }
+    ]
+  }
 }

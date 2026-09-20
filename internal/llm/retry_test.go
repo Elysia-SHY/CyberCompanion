@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -82,7 +83,7 @@ func TestCallLLMWithRetry_RetriesThenSucceeds(t *testing.T) {
 
 	setTestEndpoint(t, srv.URL)
 
-	got, err := CallLLMWithRetry([]Message{{Role: "user", Content: "hi"}}, 3)
+	got, err := CallLLMWithRetry(context.Background(), []Message{{Role: "user", Content: "hi"}}, 3)
 	if err != nil {
 		t.Fatalf("应在重试后成功，实际错误: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestCallLLMWithRetry_NoRetryOnAuthError(t *testing.T) {
 
 	setTestEndpoint(t, srv.URL)
 
-	_, err := CallLLMWithRetry([]Message{{Role: "user", Content: "hi"}}, 3)
+	_, err := CallLLMWithRetry(context.Background(), []Message{{Role: "user", Content: "hi"}}, 3)
 	if err == nil {
 		t.Fatal("401 应返回错误")
 	}

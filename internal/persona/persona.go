@@ -1,8 +1,11 @@
 package persona
 
 import (
-	"cybercompanion/internal/config"
+	"strings"
 	"sync"
+
+	"cybercompanion/internal/config"
+	"cybercompanion/internal/store"
 )
 
 type Preset struct {
@@ -138,4 +141,85 @@ func SetPersona(id string, customPrompt string) error {
 			cfg.SystemPrompt = p.Prompt
 		}
 	})
+}
+
+// ─── 多主体人格解析（优化建议书第五节）─────────────────────────────────────────
+//
+// 原实现只有「一个全局人格」：四个预设写死在源码里，切换一下就全局生效。
+// 数据库化之后，人格可以挂在不同的作用域上：
+//
+//	user 级   → 某个人独享（他一开口看到的就是这个）
+//	group 级  → 某个群独享（同一个群里所有成员共享）
+//	global 级 → 默认人格
+//
+// 解析优先级：用户级 > 群级 > global。这样同一个人在不同群里
+// 可以得到不同的名字与语气，而不是全局共用一个提示词。
+
+// ResolveForScope 解析指定对话边界当前生效的人格。
+//
+// 返回人格名与完整提示词。数据库不可用时回落到配置里的全局人格，
+// 保证任何情况下都有一份可用的提示词。
+func ResolveForScope(scope store.Scope, ownerID string) (name string, prompt string) {
+	cfg := config.Get()
+
+	if db := store.Get(); db != nil {
+		if p, err := db.ResolvePersona(scope, ownerID, cfg.ActivePersona); err == nil && p != nil {
+			return p.Name, composePrompt(p)
+		}
+	}
+	return GetActivePersona()
+}
+
+// MemoryEnabled 报告指定对话边界的人格是否启用了记忆。
+//
+// 人格可以关掉记忆：一个「只谈工作」的群人格不该把闲聊内容记下来。
+func MemoryEnabled(scope store.Scope, ownerID string) bool {
+	cfg := config.Get()
+	if db := store.Get(); db != nil {
+		if p, err := db.ResolvePersona(scope, ownerID, cfg.ActivePersona); err == nil && p != nil {
+			return p.MemoryEnabled
+		}
+	}
+	return cfg.Memory.MemoryEnabled()
+}
+
+// composePrompt 把人格提示词与其风格权重合成最终提示词。
+//
+// 风格权重（friendly / funny）不是装饰：同一个人格设定，
+// 权重不同会得到截然不同的对话体验，而让用户直接手写这段描述
+// 既啰嗦又容易与人格设定冲突。
+func composePrompt(p *store.PersonaRow) string {
+	base := p.Prompt
+	hint := styleHint(p)
+	if hint == "" {
+		return base
+	}
+	return base + "\n\n" + hint
+}
+
+// styleHint 把 0~100 的风格权重翻译成一句可执行的语气说明。
+//
+// 阈值取得比较宽（70 / 30），中间地带不输出任何说明 ——
+// 权重 50 的含义本来就是「不特别偏向」，硬加一句描述反而会扭曲人格原设定。
+func styleHint(p *store.PersonaRow) string {
+	var parts []string
+
+	switch {
+	case p.StyleFriendly >= 70:
+		parts = append(parts, "语气亲切温柔，多用关怀与亲昵的称呼。")
+	case p.StyleFriendly <= 30:
+		parts = append(parts, "语气克制简洁，保持适当的距离感，不刻意寒暄。")
+	}
+
+	switch {
+	case p.StyleFunny >= 70:
+		parts = append(parts, "多开玩笑、适度调侃，用轻松幽默的方式回应。")
+	case p.StyleFunny <= 30:
+		parts = append(parts, "少开玩笑，认真直接地回应，不要油腔滑调。")
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return "【语气要求】" + strings.Join(parts, "")
 }

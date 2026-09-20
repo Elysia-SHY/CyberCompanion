@@ -16,11 +16,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"cybercompanion/internal/agent"
 	"cybercompanion/internal/config"
 	"cybercompanion/internal/hal"
-	"cybercompanion/internal/llm"
 	"cybercompanion/internal/persona"
 	"cybercompanion/internal/stickers"
+	"cybercompanion/internal/store"
 
 	"github.com/gorilla/websocket"
 )
@@ -162,9 +163,23 @@ func authHeader() (string, error) {
 
 // ─── Incoming Message Processor ──────────────────────────────────────────────
 
+// HandleIncomingMessage 处理一条入站消息。
+//
+// 保留原有签名以兼容既有调用方与测试；群聊中「是否 @ 了机器人」
+// 的信息由内部入口 handleIncoming 携带。
 func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attachments []Attachment) {
+	handleIncoming(senderOpenID, groupOpenID, text, msgID, attachments, false)
+}
+
+// handleIncoming 是消息处理的实现。
+//
+// 与旧版相比，这个函数瘦了很多：能力分发交给了 plugin，
+// 上下文组装与能力调用交给了 agent，` 这里只保留「必须贴着 QQ 平台做」
+// 的部分 —— 附件处理、口令认证、分段发送、频率控制、表情派发。
+func handleIncoming(senderOpenID, groupOpenID, text, msgID string, attachments []Attachment, atBot bool) {
 	cfg := config.Get()
 	isGroup := groupOpenID != ""
+
 	// 收集附件：图片本地下载后内联（带类型与大小校验），语音/视频给出明确说明。
 	// 之前是把附件 URL 原样转给服务商：签名 URL 会过期、CDN 可能防盗链、
 	// 且没有任何类型与体积校验，一个超大非图片文件会被直接塞进请求体。
@@ -174,64 +189,94 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 	}
 
 	cleanText := strings.TrimSpace(text)
-
 	if cleanText == "" && len(imageURLs) == 0 {
 		cleanText = "[向你发送了一个表情互动]"
 	}
 
+	// ── 记忆与能力的隔离边界 ──
+	//
+	// 私聊按人隔离；群聊按群隔离（IsolateMemory 开启时），
+	// 这样 A 群的信息不会漏进 B 群，群里的内容也不会污染私聊记忆。
 	sessionKey := senderOpenID
+	scope := store.ScopePrivate
+	ownerID := senderOpenID
 	if isGroup {
 		sessionKey = groupOpenID + "_" + senderOpenID
+		if cfg.Groups.IsolateMemoryOr() {
+			scope = store.ScopeGroup
+			ownerID = groupOpenID
+		}
+		// 关闭隔离时仍按人隔离（只是不与私聊合并），
+		// 「完全不隔离」意味着把所有人的记忆混在一起，那不是配置项该提供的选项
 	}
+
+	// ── 群聊策略 ──
+	if isGroup {
+		policy := decideGroupReply(groupOpenID, cleanText, atBot)
+		if !policy.Reply {
+			AddLog("[Group] 跳过回复（%s）: %s", policy.Reason, truncate(cleanText, 40))
+			return
+		}
+	}
+
 	target := replyTarget{Sender: senderOpenID, Group: groupOpenID, MsgID: msgID}
 
-	isOwner := cfg.IsOwner(senderOpenID)
+	// ── 身份 ──
+	role := resolveRole(senderOpenID, cfg)
+	registerUser(senderOpenID, "")
+	ensureSession(sessionKey, scope, ownerID, groupOpenID)
+
 	lowerText := strings.ToLower(cleanText)
 	passcode := strings.ToLower(strings.TrimSpace(cfg.Passcode))
 
 	var replyContent string
 
-	// 1. Passcode Check
+	// 1. 口令认证
 	// 归一化后做常量时间比较，避免通过响应时间逐字符猜解口令。
 	// 同时加入尝试限流：口令是唯一的主人权柄入口，不限速等于允许无限爆破。
 	if passcode != "" {
 		normInput := strings.ReplaceAll(lowerText, " ", "")
 		normPass := strings.ReplaceAll(passcode, " ", "")
-		// 先看是否形似口令尝试：短消息且不含明显闲聊特征
-		if isPasscodeAttempt(normInput, normPass, isOwner) {
+		if isPasscodeAttempt(normInput, normPass, role.AtLeast(store.RoleOwner)) {
 			if ok, waitMin := authLimiter.allow(senderOpenID); !ok {
 				AddLog("[Auth] 口令尝试过于频繁，已临时锁定 %s（%d 分钟）", maskOpenID(senderOpenID), waitMin)
 				replyContent = fmt.Sprintf("🚫 口令尝试次数过多，请 %d 分钟后再试。", waitMin)
 			} else if constantTimeStringEqual(normInput, normPass) {
 				authLimiter.reset(senderOpenID)
-				_ = config.AddOwner(senderOpenID)
-				AddLog("[Auth] %s 通过口令认证成为主人", maskOpenID(senderOpenID))
-				replyContent = "🎉 呜哇！主人！是真正的主人！💙\n\n已成功将您认证为【最高权限主人】✨\n已为您解除所有限制，开启长期上下文记忆与多模态视觉能力！硬件状态、系统控制全数解锁！"
+				if err := grantOwner(senderOpenID); err != nil {
+					AddLog("[Auth] %s 通过口令认证，但写入权限失败: %v", maskOpenID(senderOpenID), err)
+					replyContent = "🎉 口令正确！但保存权限时出了点问题，请稍后再试一次。"
+				} else {
+					role = store.RoleOwner
+					AddLog("[Auth] %s 通过口令认证成为主人", maskOpenID(senderOpenID))
+					replyContent = "🎉 呜哇！主人！是真正的主人！💙\n\n已成功将您认证为【最高权限主人】✨\n已为您解除所有限制，开启长期上下文记忆与多模态视觉能力！硬件状态、系统控制全数解锁！"
+				}
 			} else {
 				authLimiter.fail(senderOpenID)
 			}
 		}
 	}
 
-	if replyContent != "" {
-		// 认证结果直接返回，不再走后续分支
-	} else if !isOwner {
-		// 2. Normal User
-		if lowerText == "状态" || lowerText == "/status" || lowerText == "重启" {
-			replyContent = "🚫【权限受限】普通访客不能操作随身硬件设备哦！不过我们可以正常闲聊与多模态识图~"
-		} else {
-			sendThinking(senderOpenID, groupOpenID, msgID)
-			replyContent = executeLLMChat(target, sessionKey, cleanText, imageURLs, false)
-		}
-	} else {
-		// 3. Owner Command Dispatch
-		switch {
-		case lowerText == "状态" || lowerText == "/status" || lowerText == "info":
-			driver := hal.GetDriver()
-			info := driver.GetInfo()
-			replyContent = formatHardwareReport(info)
+	ec := execContext(scope, ownerID, senderOpenID, role, cfg)
 
-		case lowerText == "重启" || lowerText == "/reboot":
+	switch {
+	case replyContent != "":
+		// 认证结果直接返回，不再走后续分支
+
+	default:
+		if qc, ok := matchQuickCommand(lowerText); ok {
+			// 2. 快捷命令：确定、零延迟、零 token
+			if role.AtLeast(qc.minRole) {
+				out, _ := runPlugin(qc.plugin, qc.args, ec)
+				replyContent = out
+			} else {
+				replyContent = denyMessage(qc)
+			}
+			break
+		}
+
+		switch {
+		case role.AtLeast(store.RoleOwner) && (lowerText == "重启" || lowerText == "/reboot"):
 			replyContent = "⚠️ 正在执行设备远程重启，预计 1 分钟后恢复在线。"
 			go func() {
 				time.Sleep(3 * time.Second)
@@ -239,59 +284,37 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 				_, _ = driver.ExecuteRootCmd("reboot")
 			}()
 
-		case lowerText == "清除记忆" || lowerText == "/clear":
-			clearSession(sessionKey)
-			replyContent = "🧹 已成功清空我们之间的多轮上下文记忆啦！"
+		case role.AtLeast(store.RoleOwner) && (strings.HasPrefix(cleanText, "人设 ") || strings.HasPrefix(cleanText, "/persona ")):
+			replyContent = switchPersona(cleanText, sessionKey)
 
-		case strings.HasPrefix(cleanText, "人设 ") || strings.HasPrefix(cleanText, "/persona "):
-			arg := strings.TrimSpace(cleanText[strings.Index(cleanText, " "):])
-			found := false
-			for _, p := range persona.GetAllPresets() {
-				if strings.Contains(strings.ToLower(p.Name), strings.ToLower(arg)) || strings.Contains(p.ID, arg) {
-					_ = persona.SetPersona(p.ID, "")
-					clearSession(sessionKey)
-					replyContent = fmt.Sprintf("✨ 灵魂蜕变成功！已实时切换为【%s】（%s）！记忆已重置。", p.Name, p.Title)
-					found = true
-					break
-				}
-			}
-			if !found {
-				replyContent = "❓ 未找到该预设呢。可选预设：【deepseek_chan】、【elysia】、【neko】、【jarvis】"
-			}
+		case role.AtLeast(store.RoleOwner) && strings.HasPrefix(cleanText, "设定人设 "):
+			replyContent = setCustomPersona(cleanText, sessionKey)
 
-		case strings.HasPrefix(cleanText, "设定人设 "):
-			customPrompt := strings.TrimSpace(cleanText[len("设定人设 "):])
-			if len(customPrompt) < 5 {
-				replyContent = "⚠️ 人设内容太短啦，请多写几句性格、称呼和说话习惯吧~"
-			} else {
-				_ = persona.SetPersona("custom", customPrompt)
-				clearSession(sessionKey)
-				replyContent = "🎨 全新自定义人设已实时生效并保存！快来找我打招呼吧~"
-			}
-
-		case strings.HasPrefix(cleanText, "/exec ") || strings.HasPrefix(cleanText, "/shell "):
+		case role.AtLeast(store.RoleOwner) && (strings.HasPrefix(cleanText, "/exec ") || strings.HasPrefix(cleanText, "/shell ")):
 			cmdStr := strings.TrimSpace(cleanText[strings.Index(cleanText, " "):])
-			driver := hal.GetDriver()
-			out, err := driver.ExecuteRootCmd(cmdStr)
-			if err != nil {
-				replyContent = fmt.Sprintf("❌ 执行失败: %v\n%s", err, out)
-			} else {
-				if len(out) > 800 {
-					out = out[:800] + "...(截断)"
-				}
-				replyContent = fmt.Sprintf("⚙️ 执行结果:\n%s", out)
-			}
+			out, _ := runPlugin("exec", map[string]string{"cmd": cmdStr}, ec)
+			replyContent = out
 
 		default:
+			// 3. 正常对话：交给 agent 引擎编排（记忆 + 权限 + 能力 + 模型）
 			sendThinking(senderOpenID, groupOpenID, msgID)
-			replyContent = executeLLMChat(target, sessionKey, cleanText, imageURLs, true)
+			var extra []string
+			replyContent, extra = chatWithEngine(target, sessionKey, scope, ownerID, senderOpenID, role, cleanText, imageURLs)
+
+			// 能力执行结果先发：它们通常是用户真正想要的数据，
+			// 而模型那句「让我看看」只是铺垫。
+			for _, e := range extra {
+				replyContent, _ = stickers.ParseMarkers(replyContent)
+				SendTextSegmented(senderOpenID, groupOpenID, e, "")
+			}
 		}
 	}
 
 	// Clean any internal markup
-	// 把模型写的 [表情:xxx] 标记摘出来。标记是给程序看的，用户不该看到它，
-	// 所以必须在发正文之前剥离。逗号另一件事：标记里的键要交给表情派发。
+	// 把模型写的 [表情:xxx] 与 [能力:xxx] 标记摘出来。标记是给程序看的，
+	// 用户不该看到它们，所以必须在发正文之前剥离。
 	replyContent, modelStickerKeys := stickers.ParseMarkers(replyContent)
+	replyContent = agent.StripCalls(replyContent)
 
 	// 发送回复：按 QQ 单条长度上限切分后入队，失败自动重试。
 	// 之前是一条 SendTextMessage 直接丢出去，超长会被服务端拒绝且无日志记录。
@@ -299,7 +322,64 @@ func HandleIncomingMessage(senderOpenID, groupOpenID, text, msgID string, attach
 		SendTextSegmented(senderOpenID, groupOpenID, replyContent, msgID)
 	}
 
+	// 归档到消息流水（记忆的原料），并触发异步记忆提炼
+	if replyContent != "" {
+		archiveMessage(sessionKey, scope, ownerID, "user", cleanText, 0)
+		archiveMessage(sessionKey, scope, ownerID, "assistant", replyContent, 0)
+		maybeExtractMemory(sessionKey, scope, ownerID)
+	}
+
 	dispatchStickers(senderOpenID, groupOpenID, msgID, cleanText, modelStickerKeys)
+}
+
+// grantOwner 把某人提升为主人，同时写入配置文件与数据库。
+//
+// 两边都写是有意的：配置文件是老版本与人手编辑的入口，数据库是新的权威来源。
+// 只写一边都会让用户在某个界面里看到不一致的权限。
+func grantOwner(openid string) error {
+	if err := config.AddOwner(openid); err != nil {
+		return err
+	}
+	if db := store.Get(); db != nil {
+		if _, err := db.SetRole(openid, store.RoleOwner, "passcode"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// denyMessage 生成权限不足的提示。
+func denyMessage(qc quickCommand) string {
+	if qc.denyMessage != "" {
+		return qc.denyMessage
+	}
+	return fmt.Sprintf("🚫【权限受限】这个操作需要%s及以上权限哦～", qc.minRole.Label())
+}
+
+// switchPersona 按名字切换预设人格。
+func switchPersona(cleanText, sessionKey string) string {
+	arg := strings.TrimSpace(cleanText[strings.Index(cleanText, " "):])
+	for _, p := range persona.GetAllPresets() {
+		if strings.Contains(strings.ToLower(p.Name), strings.ToLower(arg)) || strings.Contains(p.ID, arg) {
+			_ = persona.SetPersona(p.ID, "")
+			clearSession(sessionKey)
+			// 人格切换后应当清掉这个会话的长期记忆吗？答案是「不」——
+			// 换的是说话方式，不是对用户的了解。仅清空对话上下文即可。
+			return fmt.Sprintf("✨ 灵魂蜕变成功！已实时切换为【%s】（%s）！对话上下文已重置，但关于你的记忆我留着呢。", p.Name, p.Title)
+		}
+	}
+	return "❓ 未找到该预设呢。可选预设：【deepseek_chan】、【elysia】、【neko】、【jarvis】"
+}
+
+// setCustomPersona 设定自定义人格。
+func setCustomPersona(cleanText, sessionKey string) string {
+	customPrompt := strings.TrimSpace(cleanText[len("设定人设 "):])
+	if len([]rune(customPrompt)) < 5 {
+		return "⚠️ 人设内容太短啦，请多写几句性格、称呼和说话习惯吧~"
+	}
+	_ = persona.SetPersona("custom", customPrompt)
+	clearSession(sessionKey)
+	return "🎨 全新自定义人设已实时生效并保存！快来找我打招呼吧~"
 }
 
 // dispatchStickers 决定这条回复要发哪些表情。
@@ -385,104 +465,21 @@ const (
 	streamMaxFlushChars = 400
 )
 
-func executeLLMChat(target replyTarget, sessionKey, userText string, imageURLs []string, isOwner bool) string {
-	_, activePrompt := persona.GetActivePersona()
-
-	var sysPrompt string
-	if isOwner {
-		sysPrompt = activePrompt + "\n\n【权限状态：当前对话者为最高权限主人】\n你对主人完全开放、亲切依赖、无拘无束。"
-	} else {
-		sysPrompt = activePrompt + "\n\n【权限状态：当前对话者为普通访客】\n正常聊天，严禁透露底层硬件控制或执行管理指令。"
-	}
-
-	// 表情协议：只教模型「怎么表达想要一张表情」，
-	// 真正发哪张由本地表情库决定，因此模型编不出库外的内容。
-	// 关掉智能发表情、或库里没有可用表情时，这里返回空串。
-	sysPrompt += stickers.PromptHint()
-
-	cfg := config.Get()
-
-	var messages []llm.Message
-	messages = append(messages, llm.Message{Role: "system", Content: sysPrompt})
-
-	// 上下文裁剪：条数不等于 token 数，按预算裁剪才是真的可控（优化建议书 1.5）。
-	// TokenBudget 为 0 时自动设为默认值，避免误配导致上下文为空。
-	budget := cfg.TokenBudget
-	if budget <= 0 {
-		budget = 6000
-	}
-	history := trimHistoryToBudget(getSessionHistory(sessionKey), budget)
-	for _, h := range history {
-		messages = append(messages, llm.Message{Role: h.Role, Content: h.Content})
-	}
-
-	if len(imageURLs) > 0 {
-		var parts []llm.MessageContentPart
-		if userText != "" {
-			parts = append(parts, llm.MessageContentPart{Type: "text", Text: userText})
-		} else {
-			parts = append(parts, llm.MessageContentPart{Type: "text", Text: "看看这张图片，分析一下这是什么~"})
-		}
-		for _, u := range imageURLs {
-			parts = append(parts, llm.MessageContentPart{
-				Type:     "image_url",
-				ImageURL: &llm.ImageURL{URL: u},
-			})
-		}
-		messages = append(messages, llm.Message{Role: "user", Content: parts})
-	} else {
-		messages = append(messages, llm.Message{Role: "user", Content: userText})
-	}
-
-	var reply string
-	var err error
-	// streamed 标记本次是否走了流式：流式边收边发，调用方不能再发一遍
-	streamed := cfg.StreamReply && target.Group == ""
-	if streamed {
-		reply, err = streamChat(target, messages)
-	} else {
-		reply, err = llm.CallLLMWithRetry(messages, 3)
-	}
-
-	storedMsg := userText
-	if len(imageURLs) > 0 {
-		storedMsg = fmt.Sprintf("%s [附带图片]", userText)
-	}
-
-	if streamed {
-		// 流式路径已经把正文发出去了：这里不能再返回内容，否则会重发一遍。
-		// 只需把对话写入上下文记忆。
-		if err != nil {
-			AddLog("[LLM] 流式输出中断，已发送 %d 字符", len(reply))
-			SendText(target.Sender, target.Group, "…（生成被中断，等会儿再问我一次好吗？）", "")
-		}
-		if reply != "" {
-			recordSession(sessionKey, storedMsg, reply, isOwner)
-		}
-		return ""
-	}
-
-	if err != nil {
-		// 技术细节只进日志；回复给用户的是一句人话，同时避免泄露后端细节
-		AddLog("[LLM Error] %v", err)
-		return llm.UserFacingMessage(err)
-	}
-
-	recordSession(sessionKey, storedMsg, reply, isOwner)
-	return reply
-}
-
-// streamChat 边接收边发送。
+// streamWithEngine 走引擎并边生成边发送。
+//
 // 采用「累积到阈值就补发一段」而不是逐 token 发送：QQ 官方 API 不支持编辑已发消息，
 // 只能追加，过于频繁会被判刷屏。
 //
-// 流式还额外承担一件事：把 [表情:xxx] 标记从用户可见的文本里摘掉。
-// 标记可能被切成两块先后到达（"[表" + "情:love]"），所以不能等收完再正则一把梭，
-// 必须用一个会「扣住疑似未写完的尾巴」的增量过滤器（stickers.MarkerFilter）。
-func streamChat(target replyTarget, messages []llm.Message) (string, error) {
+// 这条路径上有三层过滤，顺序不能变：
+//  1. 引擎内部的能力调用门控（agent.Gate）—— 扣住 [能力:xxx]，绝不让它出现在可见文本里
+//  2. 这里的表情标记过滤器 —— 扣住可能被切成两半的 [表情:xxx]
+//  3. 分段发送 —— 按 QQ 单条长度上限切分
+//
+// 前两层都是「有可能被切开」的协议标记，因此都必须做增量过滤，
+// 不能等收完再一把梭地正则替换。
+func streamWithEngine(target replyTarget, req agent.Request) (string, error) {
 	var (
 		mu       sync.Mutex
-		full     strings.Builder // 模型原始输出，含标记
 		visible  strings.Builder // 摘掉标记后、真正发给用户的正文
 		sent     int             // visible 里已经发出去的字节数
 		lastSent time.Time
@@ -508,24 +505,25 @@ func streamChat(target replyTarget, messages []llm.Message) (string, error) {
 		SendTextSegmented(target.Sender, target.Group, part, target.MsgID)
 	}
 
-	reply, err := llm.CallLLMStream(messages, func(delta string) {
+	// 引擎的增量回调：先过表情标记过滤，再交给分段发送
+	req.OnDelta = func(delta string) {
 		mu.Lock()
 		defer mu.Unlock()
-		full.WriteString(delta)
 		if out := filter.Feed(delta); out != "" {
 			visible.WriteString(out)
 		}
 		flush(false)
-	})
+	}
+
+	resp, err := botEngine.Run(context.Background(), req)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	// 服务端忽略 stream 参数、直接回整段 JSON 时（readNonStreamFallback），
-	// onDelta 一次都不会被调用。此时必须把整段正文补发出去，
-	// 否则流式开关会让回复彻底消失（历史版本的静默丢消息）。
-	if visible.Len() == 0 && reply != "" {
-		if out := filter.Feed(reply); out != "" {
+	// 引擎在「服务端忽略 stream 参数」等情况下可能一次都不回调，
+	// 此时必须把整段正文补发出去，否则流式开关会让回复彻底消失。
+	if visible.Len() == 0 && resp.Text != "" {
+		if out := filter.Feed(resp.Text); out != "" {
 			visible.WriteString(out)
 		}
 	}
@@ -535,6 +533,11 @@ func streamChat(target replyTarget, messages []llm.Message) (string, error) {
 	flush(true)
 
 	keys := filter.Keys()
+
+	// 能力执行结果补发在正文之后：先说话，再给数据，读起来才顺。
+	for _, e := range resp.Extra {
+		SendTextSegmented(target.Sender, target.Group, e, "")
+	}
 
 	// 表情要等正文发完再发：图还没生成完就抢着发表情，像是在打断自己说话。
 	// 这里单独起协程，避免发送队列的限速把流式的收尾拖慢。
@@ -772,7 +775,22 @@ func runGatewaySession(ctx context.Context) error {
 						content = strings.TrimSpace(content[idx+1:])
 					}
 					AddLog("[Message] Group@ in %s: %s", maskOpenID(msg.GroupOpenID), truncate(content, 80))
-					go HandleIncomingMessage(msg.Author.MemberOpenID, msg.GroupOpenID, content, msg.ID, msg.Attachments)
+					// atBot=true：这个事件本身就意味着机器人被 @ 了。
+					//
+					// QQ 官方 Bot API 只推送 GROUP_AT_MESSAGE_CREATE，不推送
+					// 未被 @ 的普通群消息，因此群聊里的每一次入站都是「点名」。
+					// groups.reply_chance 只在适配器能提供全量群消息时才有意义
+					// （例如自建的 OneBot 网关），这也是该配置项仍然保留的原因。
+					go handleIncoming(msg.Author.MemberOpenID, msg.GroupOpenID, content, msg.ID, msg.Attachments, true)
+				}
+			case "GROUP_MESSAGE_CREATE":
+				// 未被 @ 的普通群消息。官方 API 目前不推送这个事件，
+				// 但部分第三方适配器会推送；处理它才能让 groups.reply_chance 生效。
+				var msg InMessage
+				dBytes, _ := json.Marshal(payload.D)
+				if err := json.Unmarshal(dBytes, &msg); err == nil {
+					go handleIncoming(msg.Author.MemberOpenID, msg.GroupOpenID,
+						strings.TrimSpace(msg.Content), msg.ID, msg.Attachments, false)
 				}
 			}
 		}

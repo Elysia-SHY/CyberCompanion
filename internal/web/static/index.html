@@ -36,6 +36,9 @@
         <button class="nav-btn" data-tab="stickers">
           <span class="icon">🖼️</span> 表情包与图床
         </button>
+        <button class="nav-btn" data-tab="admin">
+          <span class="icon">🧠</span> 用户与记忆
+        </button>
       </nav>
       <div class="sidebar-footer">
         <div class="device-badge" id="sidebar-device">探测硬件中...</div>
@@ -447,6 +450,112 @@
               <tbody id="stk-tbody"></tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <!-- TAB 6: ADMIN — 用户 / 记忆 / 用量 / 能力 / 主动消息 / 调试 -->
+      <section class="tab-pane" id="tab-admin">
+        <div class="card">
+          <div class="card-header-row">
+            <h3>数据概览</h3>
+            <button class="btn btn-sm btn-outline" id="admin-btn-refresh">🔄 刷新</button>
+          </div>
+          <div class="admin-stats" id="admin-stats">
+            <div class="admin-stat"><span class="admin-stat-value" id="stat-users">-</span><span class="admin-stat-label">用户</span></div>
+            <div class="admin-stat"><span class="admin-stat-value" id="stat-memories">-</span><span class="admin-stat-label">长期记忆</span></div>
+            <div class="admin-stat"><span class="admin-stat-value" id="stat-messages">-</span><span class="admin-stat-label">消息流水</span></div>
+            <div class="admin-stat"><span class="admin-stat-value" id="stat-sessions">-</span><span class="admin-stat-label">会话</span></div>
+            <div class="admin-stat"><span class="admin-stat-value" id="stat-calls">-</span><span class="admin-stat-label">模型调用</span></div>
+            <div class="admin-stat"><span class="admin-stat-value" id="stat-tokens">-</span><span class="admin-stat-label">累计 Token</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>模型用量</h3>
+          <p class="hint">统计口径含失败调用 —— 只算成功的话，平均响应时间会比实际体验好看得多。</p>
+          <table class="data-table" id="admin-usage-table">
+            <thead><tr><th>模型</th><th>调用</th><th>失败</th><th>输入 Token</th><th>输出 Token</th><th>平均耗时</th></tr></thead>
+            <tbody><tr><td colspan="6" class="empty-hint">暂无数据</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <h3>用户与权限</h3>
+          <p class="hint">四级权限：主人（可执行命令）&gt; 管理员（可管理配置）&gt; 可信用户（只读查询）&gt; 访客（仅闲聊）。</p>
+          <table class="data-table" id="admin-users-table">
+            <thead><tr><th>OpenID</th><th>昵称</th><th>权限</th><th>消息数</th><th>最近活跃</th><th>调整</th></tr></thead>
+            <tbody><tr><td colspan="6" class="empty-hint">加载中…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-header-row">
+            <h3>长期记忆</h3>
+            <div class="admin-inline-form">
+              <select id="memory-scope">
+                <option value="private">私聊</option>
+                <option value="group">群聊</option>
+              </select>
+              <input type="text" id="memory-owner" placeholder="归属者 OpenID / 群 OpenID">
+              <input type="text" id="memory-query" placeholder="关键词检索">
+              <button class="btn btn-sm btn-outline" id="memory-btn-load">查询</button>
+            </div>
+          </div>
+          <p class="hint">记忆按「分域 + 归属者」完全隔离：私聊记忆不会出现在群里，A 群的内容也不会漏到 B 群。</p>
+          <table class="data-table" id="admin-memory-table">
+            <thead><tr><th>内容</th><th>类别</th><th>重要度</th><th>来源</th><th>创建时间</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="6" class="empty-hint">请先选择归属者后查询</td></tr></tbody>
+          </table>
+          <div class="admin-inline-form admin-manual-add">
+            <input type="text" id="memory-new-content" placeholder="手动添加一条记忆（以「用户」开头更自然）">
+            <select id="memory-new-category">
+              <option value="fact">事实</option>
+              <option value="preference">偏好</option>
+              <option value="relation">关系</option>
+              <option value="skill">技能</option>
+              <option value="instruction">长期要求</option>
+              <option value="event">经历</option>
+            </select>
+            <button class="btn btn-sm" id="memory-btn-add">添加</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>能力插件</h3>
+          <p class="hint">停用的插件不会出现在模型的能力清单里 —— 它不会被调用，也不会被「假装调用」后道歉。</p>
+          <div id="admin-plugins" class="admin-plugin-list">
+            <div class="empty-hint">加载中…</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>主动消息任务</h3>
+          <p class="hint">时间表达式：<code>daily 08:00</code> 每天八点、<code>hourly</code> 每小时、<code>every 30m</code> 每三十分钟、留空为一次性提醒。免打扰时段内不会推送。</p>
+          <div class="admin-inline-form admin-schedule-form">
+            <input type="text" id="sched-name" placeholder="任务名称">
+            <select id="sched-kind">
+              <option value="remind">固定文本</option>
+              <option value="prompt">模型生成</option>
+              <option value="plugin">调用能力</option>
+            </select>
+            <input type="text" id="sched-owner" placeholder="推送目标 OpenID">
+            <input type="text" id="sched-cron" placeholder="时间表达式，如 daily 08:00">
+            <input type="text" id="sched-text" placeholder="内容 / 生成提示 / 能力名">
+            <button class="btn btn-sm" id="sched-btn-add">新建</button>
+          </div>
+          <table class="data-table" id="admin-schedules-table">
+            <thead><tr><th>名称</th><th>类型</th><th>周期</th><th>下次执行</th><th>已执行</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody><tr><td colspan="7" class="empty-hint">暂无任务</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-header-row">
+            <h3>调试信息</h3>
+            <button class="btn btn-sm btn-outline" id="admin-btn-debug">显示 / 隐藏</button>
+          </div>
+          <p class="hint">排障用：这里能看到模型路由实际指向哪个端点、熔断器是否在冷却、以及各表的行数。</p>
+          <pre class="admin-debug" id="admin-debug" hidden></pre>
         </div>
       </section>
     </main>

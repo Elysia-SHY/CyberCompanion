@@ -31,7 +31,8 @@ document.addEventListener('DOMContentLoaded', () => {
       persona: '灵魂与人设',
       config: '系统与模型配置',
       logs: '实时运行日志',
-      stickers: '表情包与图床'
+      stickers: '表情包与图床',
+      admin: '用户与记忆'
     };
     pageTitle.textContent = titles[tabId] || '控制台';
 
@@ -43,6 +44,8 @@ document.addEventListener('DOMContentLoaded', () => {
       fetchPresets();
     } else if (tabId === 'stickers') {
       fetchStickers();
+    } else if (tabId === 'admin') {
+      fetchAdmin();
     }
   }
 
@@ -941,6 +944,399 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast('网络错误: ' + err.message);
     }
   }
+
+  // ── 用户与记忆（管理面板）─────────────────────────────────────
+  //
+  // 这一块是数据库落地后的新增能力：用户档案、长期记忆、模型用量、
+  // 能力开关、主动消息、调试信息。全部走 /api/admin/*，需要已登录面板。
+  const ROLE_LABELS = { owner: '主人', admin: '管理员', trusted: '可信用户', guest: '访客' };
+  const CATEGORY_LABELS = {
+    preference: '偏好', fact: '事实', event: '经历',
+    relation: '关系', skill: '技能', instruction: '长期要求'
+  };
+
+  let adminLoaded = false;
+
+  async function fetchJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try { const d = await r.json(); if (d.error) msg = d.error; } catch (e) { /* 非 JSON 响应 */ }
+      throw new Error(msg);
+    }
+    return r.json();
+  }
+
+  async function postJSON(url, body, method) {
+    const r = await fetch(url, {
+      method: method || 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    if (!r.ok) {
+      let msg = 'HTTP ' + r.status;
+      try { const d = await r.json(); if (d.error) msg = d.error; } catch (e) { /* 同上 */ }
+      throw new Error(msg);
+    }
+    return r.json();
+  }
+
+  // fetchAdmin 拉取全部管理数据。
+  //
+  // 用 Promise.allSettled 而不是 Promise.all：任一接口失败（比如记忆表为空、
+  // 调度模块未启用）不应该让整个面板显示为错误，其余部分照常渲染。
+  async function fetchAdmin() {
+    if (!adminLoaded) {
+      // 首次进入时回填推送目标与记忆归属者的默认值，省去用户手动复制 OpenID
+      prefillAdminInputs();
+    }
+    adminLoaded = true;
+
+    const results = await Promise.allSettled([
+      fetchJSON('/api/admin/users'),
+      fetchJSON('/api/admin/usage?days=14'),
+      fetchJSON('/api/admin/plugins'),
+      fetchJSON('/api/admin/schedules'),
+      fetchJSON('/api/admin/debug')
+    ]);
+
+    const [users, usage, plugins, schedules, debug] = results.map(r =>
+      r.status === 'fulfilled' ? r.value : null);
+
+    if (users) renderAdminUsers(users);
+    if (usage) renderAdminUsage(usage);
+    if (plugins) renderAdminPlugins(plugins);
+    if (schedules) renderAdminSchedules(schedules);
+    if (debug) renderAdminDebug(debug);
+
+    renderAdminStats(debug, usage);
+  }
+
+  // prefillAdminInputs 用当前唯一的 owner 预填输入框。
+  function prefillAdminInputs() {
+    (async () => {
+      try {
+        const d = await fetchJSON('/api/admin/users');
+        const owner = (d.users || []).find(u => u.role === 'owner');
+        if (!owner) return;
+        const memOwner = document.getElementById('memory-owner');
+        const schedOwner = document.getElementById('sched-owner');
+        if (memOwner && !memOwner.value) memOwner.value = owner.openid;
+        if (schedOwner && !schedOwner.value) schedOwner.value = owner.openid;
+      } catch (e) { /* 预填失败不影响使用 */ }
+    })();
+  }
+
+  function renderAdminStats(debug, usage) {
+    const set = (id, v) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v === undefined || v === null ? '-' : v;
+    };
+
+    const counts = (debug && debug.counts) || {};
+    set('stat-users', counts.users);
+    set('stat-memories', counts.memories);
+    set('stat-messages', counts.messages);
+    set('stat-sessions', (counts.sessions || 0) + (counts.live_sessions || 0));
+
+    if (usage) {
+      set('stat-calls', usage.calls);
+      const tokens = (usage.prompt_tokens || 0) + (usage.output_tokens || 0);
+      set('stat-tokens', tokens > 10000 ? (tokens / 1000).toFixed(1) + 'k' : tokens);
+    }
+  }
+
+  function renderAdminUsage(usage) {
+    const tbody = document.querySelector('#admin-usage-table tbody');
+    if (!tbody) return;
+    const rows = usage.by_model || [];
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">近 ' + usage.days + ' 天没有调用记录</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(m => `
+      <tr>
+        <td>${escapeHtml(m.model || '(默认)')}</td>
+        <td>${m.calls}</td>
+        <td>${m.failures > 0 ? '<span class="badge badge-warn">' + m.failures + '</span>' : '0'}</td>
+        <td>${m.prompt_tokens}</td>
+        <td>${m.output_tokens}</td>
+        <td>${m.avg_latency_ms} ms</td>
+      </tr>`).join('');
+  }
+
+  function renderAdminUsers(data) {
+    const tbody = document.querySelector('#admin-users-table tbody');
+    if (!tbody) return;
+    const users = data.users || [];
+    if (users.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">还没有任何用户发言过</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = users.map(u => {
+      const opts = ['owner', 'admin', 'trusted', 'guest'].map(r =>
+        `<option value="${r}"${u.role === r ? ' selected' : ''}>${ROLE_LABELS[r]}</option>`).join('');
+      return `<tr>
+        <td class="mono">${escapeHtml(u.openid)}</td>
+        <td>${escapeHtml(u.nickname || '—')}</td>
+        <td><span class="badge badge-role-${u.role}">${ROLE_LABELS[u.role] || u.role}</span></td>
+        <td>${u.msg_count}</td>
+        <td class="mono-sm">${escapeHtml((u.last_seen || '').replace('T', ' ').slice(0, 16)) || '—'}</td>
+        <td><select class="role-select" data-openid="${escapeHtml(u.openid)}">${opts}</select></td>
+      </tr>`;
+    }).join('');
+
+    tbody.querySelectorAll('.role-select').forEach(sel => {
+      sel.addEventListener('change', async () => {
+        const openid = sel.getAttribute('data-openid');
+        try {
+          const d = await postJSON('/api/admin/users/role', { openid: openid, role: sel.value });
+          showToast(d.changed ? '✅ 已更新权限' : '权限未变化');
+          fetchAdmin();
+        } catch (e) {
+          showToast('❌ 更新失败: ' + e.message);
+          fetchAdmin();
+        }
+      });
+    });
+  }
+
+  function renderAdminPlugins(data) {
+    const box = document.getElementById('admin-plugins');
+    if (!box) return;
+    const list = data.plugins || [];
+    if (list.length === 0) {
+      box.innerHTML = '<div class="empty-hint">没有注册任何能力</div>';
+      return;
+    }
+    box.innerHTML = list.map(p => `
+      <div class="admin-plugin-row">
+        <div class="admin-plugin-info">
+          <div class="admin-plugin-name">${escapeHtml(p.name)}
+            <span class="badge">${escapeHtml(p.min_role_label || p.min_role)}</span>
+          </div>
+          <div class="admin-plugin-desc">${escapeHtml(p.description || '')}</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" class="plugin-toggle" data-name="${escapeHtml(p.name)}"${p.enabled ? ' checked' : ''}>
+          <span class="switch-slider"></span>
+        </label>
+      </div>`).join('');
+
+    box.querySelectorAll('.plugin-toggle').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        try {
+          await postJSON('/api/admin/plugins', { name: cb.getAttribute('data-name'), enabled: cb.checked });
+          showToast(cb.checked ? '✅ 已启用' : '⏸ 已停用');
+        } catch (e) {
+          showToast('❌ 操作失败: ' + e.message);
+          fetchAdmin();
+        }
+      });
+    });
+  }
+
+  function renderAdminSchedules(data) {
+    const tbody = document.querySelector('#admin-schedules-table tbody');
+    if (!tbody) return;
+    const list = data.schedules || [];
+    if (list.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-hint">暂无主动消息任务</td></tr>';
+      return;
+    }
+
+    const KIND_LABELS = { remind: '固定文本', prompt: '模型生成', plugin: '调用能力' };
+    const fmt = t => (t || '').replace('T', ' ').slice(0, 16) || '—';
+
+    tbody.innerHTML = list.map(s => `
+      <tr>
+        <td>${escapeHtml(s.name)}</td>
+        <td>${KIND_LABELS[s.kind] || escapeHtml(s.kind)}</td>
+        <td class="mono-sm">${escapeHtml(s.cron || '一次性')}</td>
+        <td class="mono-sm">${fmt(s.next_run)}</td>
+        <td>${s.run_count}</td>
+        <td>${s.enabled ? '<span class="badge badge-ok">启用</span>' : '<span class="badge">停用</span>'}</td>
+        <td class="admin-actions">
+          <button class="btn btn-sm btn-outline sched-toggle" data-id="${s.id}" data-enabled="${s.enabled}">
+            ${s.enabled ? '暂停' : '启用'}
+          </button>
+          <button class="btn btn-sm btn-danger sched-del" data-id="${s.id}">删除</button>
+        </td>
+      </tr>`).join('');
+
+    tbody.querySelectorAll('.sched-toggle').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const enabled = btn.getAttribute('data-enabled') !== 'true';
+        try {
+          await postJSON('/api/admin/schedules/toggle', { id: Number(btn.getAttribute('data-id')), enabled: enabled });
+          fetchAdmin();
+        } catch (e) { showToast('❌ ' + e.message); }
+      });
+    });
+    tbody.querySelectorAll('.sched-del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await postJSON('/api/admin/schedules?id=' + btn.getAttribute('data-id'), undefined, 'DELETE');
+          showToast('🗑️ 已删除任务');
+          fetchAdmin();
+        } catch (e) { showToast('❌ ' + e.message); }
+      });
+    });
+  }
+
+  function renderAdminDebug(debug) {
+    const el = document.getElementById('admin-debug');
+    if (!el) return;
+    const breakers = Object.entries(debug.breakers_open || {})
+      .map(([k, v]) => k + (v ? '：冷却中' : '：正常'))
+      .join('\n    ') || '（暂无记录）';
+    const routing = Object.entries(debug.routing || {})
+      .map(([k, v]) => k + ' → ' + v).join('\n    ') || '（未解析）';
+
+    // MCP 外部服务：连接失败的条目也要显示，且带上原因 ——
+    // 「没接上」和「接上了但没工具」是两类完全不同的问题。
+    const mcp = (debug.mcp || []).map(s => {
+      if (!s.connected) {
+        return '    ' + s.name + '：未连接 — ' + (s.error || '未知原因');
+      }
+      const tools = (s.tools || []).join(', ') || '（无）';
+      return '    ' + s.name + ' → ' + (s.server_name || '?') + ' ' + (s.version || '') +
+        '（协议 ' + (s.protocol || '?') + '，最低权限 ' + s.min_role + '）\n' +
+        '      工具：' + tools;
+    }).join('\n') || '    （未启用或未配置）';
+
+    el.textContent =
+      '结构版本   : v' + debug.schema_version + '\n' +
+      '数据库      : ' + debug.db_path + '\n' +
+      '记忆系统    : ' + (debug.memory_enabled ? '启用' : '停用') + '\n' +
+      '各表行数    : ' + JSON.stringify(debug.counts) + '\n' +
+      '模型路由    :\n    ' + routing + '\n' +
+      '端熔断状态  :\n    ' + breakers + '\n' +
+      '已注册能力  : ' + (debug.plugins || []).join(', ') + '\n' +
+      '外部 MCP    :\n' + mcp + '\n' +
+      '群频率记录  : ' + debug.groups_active + ' 个群';
+  }
+
+  // ── 记忆浏览 ──
+  async function fetchMemories() {
+    const scope = document.getElementById('memory-scope').value;
+    const owner = document.getElementById('memory-owner').value.trim();
+    const query = document.getElementById('memory-query').value.trim();
+    const tbody = document.querySelector('#admin-memory-table tbody');
+
+    if (!owner) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">请先填写归属者 OpenID</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">查询中…</td></tr>';
+
+    try {
+      const url = '/api/admin/memories?scope=' + encodeURIComponent(scope) +
+        '&owner=' + encodeURIComponent(owner) +
+        '&q=' + encodeURIComponent(query) + '&limit=100';
+      const d = await fetchJSON(url);
+      const items = d.memories || [];
+
+      if (items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">' +
+          (query ? '没有匹配「' + escapeHtml(query) + '」的记忆' : '这个对话边界还没有记忆') + '</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = items.map(m => `
+        <tr>
+          <td>${escapeHtml(m.content)}</td>
+          <td>${CATEGORY_LABELS[m.category] || escapeHtml(m.category)}</td>
+          <td>${Math.round((m.importance || 0) * 100)}%</td>
+          <td>${m.source === 'manual' ? '手工' : '自动'}</td>
+          <td class="mono-sm">${escapeHtml((m.created_at || '').replace('T', ' ').slice(0, 16))}</td>
+          <td><button class="btn btn-sm btn-danger mem-del" data-id="${m.id}">删除</button></td>
+        </tr>`).join('');
+
+      tbody.querySelectorAll('.mem-del').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          try {
+            await postJSON('/api/admin/memories?id=' + btn.getAttribute('data-id'), undefined, 'DELETE');
+            showToast('🗑️ 已删除该条记忆');
+            fetchMemories();
+          } catch (e) { showToast('❌ ' + e.message); }
+        });
+      });
+    } catch (e) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-hint">查询失败：' + escapeHtml(e.message) + '</td></tr>';
+    }
+  }
+
+  async function addMemory() {
+    const scope = document.getElementById('memory-scope').value;
+    const owner = document.getElementById('memory-owner').value.trim();
+    const contentEl = document.getElementById('memory-new-content');
+    const content = contentEl.value.trim();
+
+    if (!owner || !content) {
+      showToast('请填写归属者与记忆内容');
+      return;
+    }
+    try {
+      await postJSON('/api/admin/memories', {
+        scope: scope, owner: owner, content: content,
+        category: document.getElementById('memory-new-category').value,
+        importance: 0.7
+      });
+      contentEl.value = '';
+      showToast('✅ 已写入记忆');
+      fetchMemories();
+    } catch (e) { showToast('❌ ' + e.message); }
+  }
+
+  async function addSchedule() {
+    const name = document.getElementById('sched-name').value.trim();
+    const owner = document.getElementById('sched-owner').value.trim();
+    const kind = document.getElementById('sched-kind').value;
+    const value = document.getElementById('sched-text').value.trim();
+
+    if (!name || !owner) {
+      showToast('请填写任务名称与推送目标');
+      return;
+    }
+    // 三种任务类型的「内容」落在不同字段上，这里按类型分发
+    const body = {
+      name: name, kind: kind, owner_id: owner, scope: 'private',
+      cron: document.getElementById('sched-cron').value.trim(),
+      text: kind === 'remind' ? value : '',
+      prompt: kind === 'prompt' ? value : '',
+      plugin: kind === 'plugin' ? value : '',
+      enabled: true
+    };
+
+    try {
+      await postJSON('/api/admin/schedules', body);
+      showToast('✅ 已创建任务');
+      ['sched-name', 'sched-text'].forEach(id => { document.getElementById(id).value = ''; });
+      fetchAdmin();
+    } catch (e) { showToast('❌ ' + e.message); }
+  }
+
+  // 事件绑定（只绑一次）
+  const adminRefresh = document.getElementById('admin-btn-refresh');
+  if (adminRefresh) adminRefresh.addEventListener('click', fetchAdmin);
+
+  const memLoad = document.getElementById('memory-btn-load');
+  if (memLoad) memLoad.addEventListener('click', fetchMemories);
+
+  const memAdd = document.getElementById('memory-btn-add');
+  if (memAdd) memAdd.addEventListener('click', addMemory);
+
+  const schedAdd = document.getElementById('sched-btn-add');
+  if (schedAdd) schedAdd.addEventListener('click', addSchedule);
+
+  const debugBtn = document.getElementById('admin-btn-debug');
+  if (debugBtn) debugBtn.addEventListener('click', () => {
+    const el = document.getElementById('admin-debug');
+    el.hidden = !el.hidden;
+  });
 
   // Init Intervals
   fetchStatus();
