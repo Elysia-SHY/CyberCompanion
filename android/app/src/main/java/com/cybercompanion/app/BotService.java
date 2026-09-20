@@ -128,7 +128,9 @@ public class BotService extends Service {
                     statusMessage = "错误：找不到适用于本机的核心二进制文件";
                     Log.e(TAG, statusMessage);
                     isRunning = false;
-                    return;
+                    // 返回 0 表示「正常结束」：二进制缺失是持久性问题，
+                    // 重启循环再试 5 次也是白费，直接交给外层退出。
+                    return 0;
                 }
 
                 statusMessage = "正在启动服务进程...";
