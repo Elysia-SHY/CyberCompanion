@@ -297,7 +297,6 @@ func handleIncoming(senderOpenID, groupOpenID, text, msgID string, attachments [
 
 		default:
 			// 3. 正常对话：交给 agent 引擎编排（记忆 + 权限 + 能力 + 模型）
-			sendThinking(senderOpenID, groupOpenID, msgID)
 			var extra []string
 			replyContent, extra = chatWithEngine(target, sessionKey, scope, ownerID, senderOpenID, role, cleanText, imageURLs)
 
@@ -437,15 +436,8 @@ func dispatchStickers(sender, group, msgID, userText string, modelKeys []string)
 	send(scene)
 }
 
-// sendThinking 在真正调用大模型之前给用户一个即时反馈。
-//
-// 阻塞式调用在长回复场景要等十几秒，期间用户完全不知道机器人是否还活着
-// （优化建议书 1.4）。只在私聊发送：群聊里每条消息都跟一个气泡会显得吵。
+// sendThinking 已停用：不再在用户发消息时发送 💭 云朵消息
 func sendThinking(senderOpenID, groupOpenID, msgID string) {
-	if groupOpenID != "" {
-		return
-	}
-	SendText(senderOpenID, groupOpenID, "💭", msgID)
 }
 
 // replyTarget 描述一条回复要发到哪里。
