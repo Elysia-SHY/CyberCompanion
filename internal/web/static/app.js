@@ -140,9 +140,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const body = isSetup
           ? { password: pwd, confirm: document.getElementById('cc-setup-confirm').value }
           : { password: pwd };
+        const headers = { 'Content-Type': 'application/json' };
+        const csrfToken = readCookie('cc_csrf');
+        if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
         const r = await _rawFetch(isSetup ? '/api/setup' : '/api/login', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: headers,
           body: JSON.stringify(body)
         });
         if (r.ok) {
@@ -151,7 +154,15 @@ document.addEventListener('DOMContentLoaded', () => {
           location.reload();
         } else {
           let msg = isSetup ? '创建失败' : '登录失败';
-          try { msg = (await r.json()).error || msg; } catch (e) {}
+          try {
+            const d = await r.json();
+            msg = d.error || d.message || msg;
+          } catch (e) {
+            try {
+              const txt = await r.text();
+              if (txt) msg = txt;
+            } catch (_) {}
+          }
           errEl.textContent = msg;
         }
       } catch (e) {

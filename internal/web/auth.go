@@ -230,6 +230,10 @@ func requireSameOrigin(next http.Handler) http.Handler {
 				http.Error(w, "跨站请求被拒绝", http.StatusForbidden)
 				return
 			}
+			// 登录与首次初始化端点无需校验 CSRF 双重提交（此时尚未建立鉴权会话）
+			if r.URL.Path == "/api/login" || r.URL.Path == "/api/setup" {
+				break
+			}
 			// 双重提交 Cookie 校验
 			if c, err := r.Cookie("cc_csrf"); err == nil {
 				if r.Header.Get("X-CSRF-Token") != c.Value {
