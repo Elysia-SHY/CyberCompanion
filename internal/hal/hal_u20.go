@@ -3,10 +3,8 @@
 package hal
 
 import (
-	"fmt"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 )
 
@@ -62,41 +60,31 @@ func (d *U20Driver) GetInfo() DeviceInfo {
 	}
 	info.Enrich()
 
-	// 信号强度取模组暴露的 RSSI 文件（不同固件路径不一，逐个探测）
-	if rssi := readModemRSSI(); rssi != "" {
-		info.SignalRSRP = rssi
-		info.SignalBar = 4
+	// 探测真实 5G/4G 蜂窝网络与信号质量
+	if cell := ProbeCellular(); cell != nil && cell.SignalRSRP != "" {
+		info.SignalRSRP = cell.SignalRSRP
+		info.SignalBar = cell.SignalBar
+		if cell.NetworkType != "" {
+			info.NetworkType = cell.NetworkType
+		}
+		if cell.SignalDetail != "" {
+			info.Details.SignalDetail = cell.SignalDetail
+		}
+		if cell.Operator != "" {
+			info.Details.CellularOperator = cell.Operator
+		}
+		if cell.Band != "" {
+			info.Details.CellularBand = cell.Band
+		}
+	} else if len(info.Details.NetworkIPs) > 0 {
+		info.SignalRSRP = "已连网 (非蜂窝)"
+		info.SignalBar = 3
 	} else {
 		info.SignalRSRP = "模组未提供"
 		info.SignalBar = 0
 	}
 
 	return info
-}
-
-// readModemRSSI 尝试从常见路径读取蜂窝信号强度。
-// 不同固件差异很大，读不到时返回空字符串让上层标注"未提供"。
-func readModemRSSI() string {
-	paths := []string{
-		"/sys/class/net/wwan0/device/rssi",
-		"/sys/class/net/rmnet0/device/rssi",
-		"/proc/net/wwan/rssi",
-	}
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		s := strings.TrimSpace(string(data))
-		if s == "" {
-			continue
-		}
-		if n, err := strconv.Atoi(s); err == nil {
-			return fmt.Sprintf("%d dBm", n)
-		}
-		return s
-	}
-	return ""
 }
 
 func (d *U20Driver) ExecuteRootCmd(cmd string) (string, error) {

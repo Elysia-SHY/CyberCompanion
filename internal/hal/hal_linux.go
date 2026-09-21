@@ -44,6 +44,25 @@ func (d *LinuxDriver) GetInfo() DeviceInfo {
 	}
 	info.Enrich()
 
+	// 优先检查是否有蜂窝模组信号
+	if cell := ProbeCellular(); cell != nil && cell.SignalRSRP != "" {
+		info.SignalRSRP = cell.SignalRSRP
+		info.SignalBar = cell.SignalBar
+		if cell.NetworkType != "" {
+			info.NetworkType = cell.NetworkType
+		}
+		if cell.SignalDetail != "" {
+			info.Details.SignalDetail = cell.SignalDetail
+		}
+		if cell.Operator != "" {
+			info.Details.CellularOperator = cell.Operator
+		}
+		if cell.Band != "" {
+			info.Details.CellularBand = cell.Band
+		}
+		return info
+	}
+
 	// 根据实际网卡情况修正网络描述
 	info.SignalBar = 0
 	info.SignalRSRP = "未联网"

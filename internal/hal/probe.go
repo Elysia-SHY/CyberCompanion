@@ -50,8 +50,11 @@ type ExtendedInfo struct {
 	BatteryTempC  int    `json:"battery_temp_c"`
 
 	// —— 网络 ——
-	TrafficTotal string   `json:"traffic_total"` // 累计流量
-	NetworkIPs   []string `json:"network_ips"`   // 本机各网卡地址
+	TrafficTotal     string   `json:"traffic_total"` // 累计流量
+	NetworkIPs       []string `json:"network_ips"`   // 本机各网卡地址
+	SignalDetail     string   `json:"signal_detail,omitempty"`
+	CellularOperator string   `json:"cellular_operator,omitempty"`
+	CellularBand     string   `json:"cellular_band,omitempty"`
 
 	// —— 采集元信息 ——
 	// 明确告诉前端哪些项拿不到，避免"静默返回假值"

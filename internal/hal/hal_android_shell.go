@@ -70,6 +70,21 @@ func (d *AndroidDriver) GetInfo() DeviceInfo {
 	if snap.SignalDBm < 0 {
 		info.SignalRSRP = strconv.Itoa(snap.SignalDBm) + " dBm"
 		info.SignalBar = clampSignalBar(snap.SignalBars)
+	} else if cell := ProbeCellular(); cell != nil && cell.SignalRSRP != "" {
+		info.SignalRSRP = cell.SignalRSRP
+		info.SignalBar = cell.SignalBar
+		if cell.SignalDetail != "" {
+			info.Details.SignalDetail = cell.SignalDetail
+		}
+		if cell.Band != "" {
+			info.Details.CellularBand = cell.Band
+		}
+		if cell.Operator != "" {
+			info.Details.CellularOperator = cell.Operator
+		}
+		if info.NetworkType == "" || info.NetworkType == "网络状态未知" {
+			info.NetworkType = cell.NetworkType
+		}
 	} else if info.NetworkType != "" && info.NetworkType != "网络状态未知" {
 		// 连接是确定存在的（有连接类型），只是 ROM 没把强度暴露给应用
 		info.SignalRSRP = "已连网（信号强度未暴露）"

@@ -54,11 +54,23 @@ func (d *QcomDriver) GetInfo() DeviceInfo {
 	}
 	info.Enrich()
 
-	if rssi := readModemRSSI(); rssi != "" {
-		info.SignalRSRP = rssi
-		info.SignalBar = 3
+	if cell := ProbeCellular(); cell != nil && cell.SignalRSRP != "" {
+		info.SignalRSRP = cell.SignalRSRP
+		info.SignalBar = cell.SignalBar
+		if cell.NetworkType != "" {
+			info.NetworkType = cell.NetworkType
+		}
+		if cell.SignalDetail != "" {
+			info.Details.SignalDetail = cell.SignalDetail
+		}
+		if cell.Operator != "" {
+			info.Details.CellularOperator = cell.Operator
+		}
+		if cell.Band != "" {
+			info.Details.CellularBand = cell.Band
+		}
 	} else if len(info.Details.NetworkIPs) > 0 {
-		info.SignalRSRP = "已连网（非蜂窝）"
+		info.SignalRSRP = "已连网 (非蜂窝)"
 		info.SignalBar = 3
 	} else {
 		info.SignalRSRP = "未联网"

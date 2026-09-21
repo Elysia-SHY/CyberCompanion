@@ -317,15 +317,15 @@ document.addEventListener('DOMContentLoaded', () => {
       // Stats
       document.getElementById('stat-device').textContent = data.device_info.device_type;
       document.getElementById('stat-os-arch').textContent = `${data.device_info.os} / ${data.device_info.arch}`;
+      // 详细硬件信息（所有平台统一提供，拿不到的项明确标注）
+      const d = data.device_info.details || {};
+
       document.getElementById('stat-uptime').textContent = data.device_info.uptime;
       document.getElementById('stat-hostname').textContent = `主机: ${data.device_info.hostname}`;
       document.getElementById('stat-signal').textContent = data.device_info.signal_rsrp || '未提供';
       document.getElementById('stat-network-type').textContent = data.device_info.network_type || '未提供';
       document.getElementById('stat-traffic-today').textContent = data.device_info.traffic_today || '未提供';
-      document.getElementById('stat-rsrp-detail').textContent = data.device_info.signal_rsrp || '未提供';
-
-      // 详细硬件信息（所有平台统一提供，拿不到的项明确标注）
-      const d = data.device_info.details || {};
+      document.getElementById('stat-rsrp-detail').textContent = d.signal_detail || data.device_info.signal_rsrp || '未提供';
 
       const ipsEl = document.getElementById('stat-network-ips');
       if (ipsEl) {
@@ -350,16 +350,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      // Memory bar
-      if (d.memory_total_mb_ext > 0) {
-        const used = d.memory_used_mb_ext;
-        const total = d.memory_total_mb_ext;
-        const pct = Math.min(100, Math.round((used / total) * 100));
-        document.getElementById('mem-label').textContent = `${used} MB / ${total} MB (${pct}%)`;
-        document.getElementById('mem-fill').style.width = `${pct}%`;
-      } else {
-        document.getElementById('mem-label').textContent = '本平台未提供';
-        document.getElementById('mem-fill').style.width = '0%';
+      // 内存条
+      const memFill = document.getElementById('mem-fill');
+      const memLabel = document.getElementById('mem-label');
+      if (memFill && memLabel) {
+        if (data.device_info.memory_total_mb > 0) {
+          const memPct = Math.min(100, Math.round((data.device_info.memory_used_mb / data.device_info.memory_total_mb) * 100));
+          memLabel.textContent = `${data.device_info.memory_used_mb} MB / ${data.device_info.memory_total_mb} MB (${memPct}%)`;
+          memFill.style.width = `${memPct}%`;
+        } else {
+          memLabel.textContent = '本平台未提供';
+          memFill.style.width = '0%';
+        }
       }
 
       // Disk bar
@@ -394,6 +396,12 @@ document.addEventListener('DOMContentLoaded', () => {
           ['运行协程', nz(d.goroutines) ? `${d.goroutines}` : '未提供'],
           ['采集时间', d.collected_at || '未提供']
         ];
+        if (d.cellular_band) {
+          specs.push(['蜂窝频段', d.cellular_band]);
+        }
+        if (d.cellular_operator) {
+          specs.push(['网络运营商', d.cellular_operator]);
+        }
         specList.innerHTML = '';
         specs.forEach(([k, v]) => {
           const row = document.createElement('div');
