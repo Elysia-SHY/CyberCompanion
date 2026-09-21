@@ -181,10 +181,10 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 		resp.UsedPlugins = used
 		resp.Extra = results
 
-		// 如果模型调用了联网搜索，触发第二轮总结合成：让模型以当前人设提炼总结，严禁直接复制粘贴
+		// 如果模型调用了联网搜索或天气查询，触发第二轮总结合成：让模型以当前人设提炼总结，严禁直接复制粘贴
 		if len(searchOutputs) > 0 {
 			searchContext := strings.Join(searchOutputs, "\n\n")
-			synthPrompt := fmt.Sprintf("【联网搜索结果如下】：\n%s\n\n【回答要求】：请根据以上搜索结果，以你的角色人设口吻用 1~2 句话（30字左右）自然生动地回答。绝对禁止直接复制粘贴搜索结果、网页摘要或URL链接，禁止机械念稿，保持人设！", searchContext)
+			synthPrompt := fmt.Sprintf("【联网检索/实时信息如下】：\n%s\n\n【回答要求】：请根据以上信息，以你的角色人设口吻用 1~2 句话（30字左右）自然生动地回答用户。绝对禁止直接复制粘贴原始搜索文本或URL链接，禁止机械念稿，保持人设！", searchContext)
 
 			synthMessages := make([]llm.Message, len(messages), len(messages)+2)
 			copy(synthMessages, messages)
@@ -228,7 +228,7 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 //
 // 顺序而不是并发：多个能力同时执行会让「先说话后发数据」的观感变得混乱，
 // 而且低功耗设备上并发执行的收益本来就有限。
-// 特殊处理：search（联网搜索）结果专供模型在第二轮做提炼总结，不作为 Extra 直接发给用户。
+// 特殊处理：search 与 weather 结果专供模型在第二轮做提炼总结，不作为 Extra 直接发给用户。
 func (e *Engine) runCalls(ctx context.Context, calls []Call, ec *plugin.ExecContext) (results []string, used []string, searchOutputs []string) {
 	for _, c := range calls {
 		if c.Name == "" {
@@ -237,9 +237,9 @@ func (e *Engine) runCalls(ctx context.Context, calls []Call, ec *plugin.ExecCont
 		res := e.plugins.Call(ctx, c.Name, c.Args, ec)
 		used = append(used, c.Name)
 
-		if c.Name == "search" {
+		if c.Name == "search" || c.Name == "weather" {
 			if res.Error != nil && res.Text == "" {
-				searchOutputs = append(searchOutputs, fmt.Sprintf("（联网搜索未成功：%v）", res.Error))
+				searchOutputs = append(searchOutputs, fmt.Sprintf("（%s 未成功：%v）", c.Name, res.Error))
 			} else if strings.TrimSpace(res.Text) != "" {
 				searchOutputs = append(searchOutputs, res.Text)
 			}

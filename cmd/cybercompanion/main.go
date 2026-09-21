@@ -207,7 +207,9 @@ func main() {
 	plugins.Register(plugin.NewExecPlugin())
 	plugins.Register(plugin.NewRecallPlugin(memMgr))
 	plugins.Register(plugin.NewForgetPlugin(memMgr))
-	plugins.Register(plugin.NewSearchPlugin())
+	searchPlugin := plugin.NewSearchPlugin()
+	plugins.Register(searchPlugin)
+	plugins.Register(plugin.NewWeatherPlugin(searchPlugin))
 	plugins.Register(plugin.NewRemindPlugin(db))
 	qq.AddLog("[Plugin] 已注册能力: %v", plugins.SortedNames())
 
