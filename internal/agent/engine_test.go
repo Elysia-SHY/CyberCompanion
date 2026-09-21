@@ -338,3 +338,50 @@ func TestEngineTimeout(t *testing.T) {
 		t.Fatal("上下文超时应当返回错误，而不是永久阻塞")
 	}
 }
+
+// TestEngineSearchPluginSynthesizesInPersona 验证 search 能力不直接发 Extra，而是触发第二轮由模型提炼为人设语言。
+func TestEngineSearchPluginSynthesizesInPersona(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			// 第一轮：模型要求调用 search 插件
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]string{"role": "assistant", "content": "稍等喵~ [能力:search query=超时空辉夜姬]"}, "finish_reason": "stop"},
+				},
+			})
+		} else {
+			// 第二轮：模型看到搜索结果后做人设总结
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{"message": map[string]string{"role": "assistant", "content": "雪球查到啦喵~ 《超时空辉夜姬》是一部很棒的动画电影！"}, "finish_reason": "stop"},
+				},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	rec := &recordingPlugin{name: "search", reply: "🔍 搜索结果【超时空辉夜姬】：\n1. 《超时空辉夜姬》山下清悟监督作品"}
+	engine, _ := buildEngine(t, srv.URL, rec)
+
+	resp, err := engine.Run(context.Background(), Request{
+		Scope: store.ScopePrivate, OwnerID: "u1", CallerID: "u1",
+		Role: store.RoleGuest, UserText: "你知道超时空辉夜姬吗",
+	})
+	if err != nil {
+		t.Fatalf("执行失败: %v", err)
+	}
+
+	if callCount != 2 {
+		t.Fatalf("期望触发两轮模型调用（含搜索结果总结），实际调用了 %d 次", callCount)
+	}
+	if len(resp.Extra) != 0 {
+		t.Fatalf("搜索结果绝对不应放入 Extra 直接发给用户: %+v", resp.Extra)
+	}
+	if !strings.Contains(resp.Text, "雪球查到啦喵") {
+		t.Fatalf("正文应为第二轮人设提炼总结: %q", resp.Text)
+	}
+}
+

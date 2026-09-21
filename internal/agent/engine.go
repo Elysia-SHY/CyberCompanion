@@ -140,10 +140,12 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 	streamed := req.OnDelta != nil
 	var calls []Call
 	var clean string
+	var raw string
+	var err error
 
 	if streamed {
 		gate := NewGate()
-		raw, err := e.providers.ChatStream(ctx, provider.PurposeChat, messages, func(delta string) {
+		raw, err = e.providers.ChatStream(ctx, provider.PurposeChat, messages, func(delta string) {
 			if out := gate.Feed(delta); out != "" {
 				req.OnDelta(out)
 			}
@@ -165,7 +167,7 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 			resp.Streamed = true
 		}
 	} else {
-		raw, err := e.providers.Chat(ctx, provider.PurposeChat, messages)
+		raw, err = e.providers.Chat(ctx, provider.PurposeChat, messages)
 		if err != nil {
 			return resp, err
 		}
@@ -175,9 +177,44 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 
 	// ── 5. 执行被调用的能力 ──
 	if len(calls) > 0 && e.plugins != nil {
-		results, used := e.runCalls(ctx, calls, ec)
+		results, used, searchOutputs := e.runCalls(ctx, calls, ec)
 		resp.UsedPlugins = used
 		resp.Extra = results
+
+		// 如果模型调用了联网搜索，触发第二轮总结合成：让模型以当前人设提炼总结，严禁直接复制粘贴
+		if len(searchOutputs) > 0 {
+			searchContext := strings.Join(searchOutputs, "\n\n")
+			synthPrompt := fmt.Sprintf("【联网搜索结果如下】：\n%s\n\n【回答要求】：请根据以上搜索结果，以你的角色人设口吻用 1~2 句话（30字左右）自然生动地回答。绝对禁止直接复制粘贴搜索结果、网页摘要或URL链接，禁止机械念稿，保持人设！", searchContext)
+
+			synthMessages := make([]llm.Message, len(messages), len(messages)+2)
+			copy(synthMessages, messages)
+			synthMessages = append(synthMessages,
+				llm.Message{Role: "assistant", Content: raw},
+				llm.Message{Role: "user", Content: synthPrompt},
+			)
+
+			if streamed && req.OnDelta != nil {
+				gate2 := NewGate()
+				_, err2 := e.providers.ChatStream(ctx, provider.PurposeChat, synthMessages, func(delta string) {
+					if out := gate2.Feed(delta); out != "" {
+						req.OnDelta(out)
+					}
+				})
+				if tail := gate2.Flush(); tail != "" {
+					req.OnDelta(tail)
+				}
+				if err2 == nil {
+					resp.Streamed = true
+					resp.Text = ""
+				}
+			} else {
+				raw2, err2 := e.providers.Chat(ctx, provider.PurposeChat, synthMessages)
+				if err2 == nil {
+					clean2, _ := ExtractCalls(raw2)
+					resp.Text = clean2
+				}
+			}
+		}
 	}
 
 	// 流式路径下正文已发出，Text 留空避免重复发送
@@ -191,13 +228,23 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 //
 // 顺序而不是并发：多个能力同时执行会让「先说话后发数据」的观感变得混乱，
 // 而且低功耗设备上并发执行的收益本来就有限。
-func (e *Engine) runCalls(ctx context.Context, calls []Call, ec *plugin.ExecContext) (results []string, used []string) {
+// 特殊处理：search（联网搜索）结果专供模型在第二轮做提炼总结，不作为 Extra 直接发给用户。
+func (e *Engine) runCalls(ctx context.Context, calls []Call, ec *plugin.ExecContext) (results []string, used []string, searchOutputs []string) {
 	for _, c := range calls {
 		if c.Name == "" {
 			continue
 		}
 		res := e.plugins.Call(ctx, c.Name, c.Args, ec)
 		used = append(used, c.Name)
+
+		if c.Name == "search" {
+			if res.Error != nil && res.Text == "" {
+				searchOutputs = append(searchOutputs, fmt.Sprintf("（联网搜索未成功：%v）", res.Error))
+			} else if strings.TrimSpace(res.Text) != "" {
+				searchOutputs = append(searchOutputs, res.Text)
+			}
+			continue
+		}
 
 		if res.Error != nil && res.Text == "" {
 			results = append(results, fmt.Sprintf("（%s 没有成功：%v）", c.Name, res.Error))
@@ -207,7 +254,7 @@ func (e *Engine) runCalls(ctx context.Context, calls []Call, ec *plugin.ExecCont
 			results = append(results, res.Text)
 		}
 	}
-	return results, used
+	return results, used, searchOutputs
 }
 
 // IdentityGuardrail 是最高优先级的角色身份防线与防自爆指令。
@@ -228,7 +275,10 @@ const IdentityGuardrail = `
    - 绝对禁止输出任何动作或心理描写括号（如“（歪头）”、“（伸出爪子）”、“（轻轻蹭了蹭）”等剧本/小说式描写），只发纯口头说话内容！
    - 单次回复严格控制在 1~2 句话以内（总字数控制在 15~35 字），重点突出，简短软萌/生动。
    - 严禁分多段发长文、严禁写小作文！除非对方明确要求（如“详细展开”、“写一篇文章”），否则任何时候都绝不刷屏。
-6. 联网搜索：遇到不了解的作品、最新资讯或用户要求查询时，可调用 [能力:search query=关键词] 获取互联网信息。
+6. 联网搜索与总结（绝对严禁直接复制粘贴）：
+   - 遇到不了解的作品、最新资讯、实时动态或用户要求查询时，可调用 [能力:search query=关键词] 获取互联网信息。
+   - 获取搜索结果后，必须根据搜索内容并结合自身角色口吻进行提炼与简明总结（严格控制在 1~2 句话，30字左右），只说要点与结论。
+   - 绝对严禁向用户直接复制粘贴搜索结果、网页摘要或URL链接！严禁罗列大段搜索原文！
 `
 
 // buildSystemPrompt 组装最终的系统提示词。

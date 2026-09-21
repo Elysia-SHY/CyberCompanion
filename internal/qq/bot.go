@@ -295,8 +295,7 @@ func handleIncoming(senderOpenID, groupOpenID, text, msgID string, attachments [
 			out, _ := runPlugin("exec", map[string]string{"cmd": cmdStr}, ec)
 			replyContent = out
 
-		case strings.HasPrefix(cleanText, "搜索 ") || strings.HasPrefix(cleanText, "/search ") ||
-			strings.HasPrefix(cleanText, "搜一下 ") || strings.HasPrefix(cleanText, "查一下 "):
+		case strings.HasPrefix(cleanText, "/search "):
 			var q string
 			if idx := strings.Index(cleanText, " "); idx > 0 {
 				q = strings.TrimSpace(cleanText[idx+1:])
@@ -304,6 +303,24 @@ func handleIncoming(senderOpenID, groupOpenID, text, msgID string, attachments [
 			if q != "" {
 				out, _ := runPlugin("search", map[string]string{"query": q}, ec)
 				replyContent = out
+			}
+
+		case strings.HasPrefix(cleanText, "搜索 ") || strings.HasPrefix(cleanText, "搜一下 ") ||
+			strings.HasPrefix(cleanText, "查一下 "):
+			var q string
+			if idx := strings.Index(cleanText, " "); idx > 0 {
+				q = strings.TrimSpace(cleanText[idx+1:])
+			}
+			if q != "" {
+				// 立即执行搜索插件获取最新信息，并让引擎结合当前角色人设进行简明总结，绝不直接甩大段原文
+				out, ok := runPlugin("search", map[string]string{"query": q}, ec)
+				if ok && out != "" {
+					promptWithSearch := fmt.Sprintf("请以你的角色人设口吻，根据以下联网搜索结果用 1~2 句话（30字左右）自然回答关于「%s」的内容。绝对禁止直接复制粘贴搜索结果、网页摘要或URL链接，保持角色语气灵动简练：\n\n%s", q, out)
+					replyContent, _ = chatWithEngine(target, sessionKey, scope, ownerID, senderOpenID, role, promptWithSearch, imageURLs)
+				} else {
+					cleanText = "帮我查一下 " + q
+					replyContent, _ = chatWithEngine(target, sessionKey, scope, ownerID, senderOpenID, role, cleanText, imageURLs)
+				}
 			}
 
 		default:
