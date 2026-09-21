@@ -155,7 +155,7 @@
                         </div>
                         <div style="padding: 8px; background: rgba(255,255,255,0.04); border-radius: 6px; border-left: 3px solid #a855f7;">
                             <div style="color: #94a3b8; font-size: 10px;">Web 控制台端口</div>
-                            <div style="font-weight: bold; margin-top: 2px;">:8088 (v1.3.0)</div>
+                            <div style="font-weight: bold; margin-top: 2px;">:8088 (v1.3.1)</div>
                         </div>
                         <div style="padding: 8px; background: rgba(255,255,255,0.04); border-radius: 6px; border-left: 3px solid #22c55e;">
                             <div style="color: #94a3b8; font-size: 10px;">LLM 驱动后端</div>

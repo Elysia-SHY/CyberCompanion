@@ -2,6 +2,19 @@
 
 本项目遵循「能用 → 可靠 → 好用 → 可维护」的演进顺序。以下为优化建议书落地后的工程化改造记录。
 
+## v1.3.1 - 2026-09-21
+
+### 修复与优化
+
+- **5G/4G 蜂窝网络信号与频段遥测（`internal/hal`）**：
+  - 修复随身 WiFi / 4G/5G CPE（中兴微 ZXIC、展锐 Unisoc、高通 QCOM、Android 棒子及 U20）在 Web 仪表盘信号质量常态为 0% 或读取失败的问题。
+  - 接入 Android `telephony.registry` 解析引擎，实时提取 5G NR / 4G LTE 核心射频指标：RSRP（参考信号接收功率）、RSRQ（信号接收质量）、SINR（信噪比）、信号强度格数（SignalBar）。
+  - 新增运营商（Operator）与工作频段（Band，如 n78 / Band 3 等）动态识别并暴露至 `/api/status` 与 `/api/info`。
+  - 增加 2.5 秒轻量级缓存避免频繁调用 IPC，非 Linux/Android 平台安全降级。
+- **Web 控制台登录与 CSRF 修复（`internal/web`）**：
+  - 修复浏览器缓存旧 `cc_csrf` Cookie 时访问 `/api/login` 或 `/api/setup` 触发 `403 CSRF 校验失败`（表现为 Web 界面一直卡在“登录失败”或无法登录）的缺陷。对登录与初始化接口豁免严格的 Cookie-Header 匹配校验。
+  - 优化前端登录错误提示与请求头自愈机制。
+
 ## v1.3.0 - 2026-09-20
 
 本版按优化建议书把 CyberCompanion 从「QQ 上的 AI 聊天机器人」重构成「QQ 入口 + AI 人格 + 长期记忆 + Agent 能力 + 设备控制」的个人 AI Agent 平台。核心变化是三条：**有了真正的关系记忆**、**有了可扩展的能力体系**、**有了能说清成本与状态的账**。
