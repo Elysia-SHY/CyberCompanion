@@ -84,11 +84,14 @@ func (r *Registry) Resolve(purpose Purpose) (llm.Endpoint, error) {
 
 	target := routingTarget(cfg, purpose)
 
-	// 未配置任何 providers：整条路由退化为默认端点
+	// 未配置任何 providers：整条路由退化为默认端点（支持通过 model_routing 指定/切换模型名）
 	if len(cfg.Providers) == 0 {
 		ep := llm.DefaultEndpoint()
 		if ep.URL == "" {
 			return llm.Endpoint{}, fmt.Errorf("未配置任何模型端点：请填写 oneapi_url 或在 providers 中定义")
+		}
+		if target != "" {
+			ep.Model = target
 		}
 		r.note(purpose, ep)
 		return ep, nil

@@ -480,7 +480,8 @@ type configView struct {
 	OwnersCount       int      `json:"owners_count"`
 	TokenBudget       int      `json:"token_budget"`
 	MaxHistoryMsgs    int      `json:"max_history_msgs"`
-	StreamReply       bool     `json:"stream_reply"`
+	StreamReply       bool                `json:"stream_reply"`
+	ModelRouting      config.ModelRouting `json:"model_routing"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -508,26 +509,28 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			TokenBudget:    cfg.TokenBudget,
 			MaxHistoryMsgs: cfg.MaxHistoryMsgs,
 			StreamReply:    cfg.StreamReply,
+			ModelRouting:   cfg.Routing,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(view)
 
 	case http.MethodPost:
 		var updateReq struct {
-			QQAppID        string    `json:"qq_appid"`
-			QQSecret       string    `json:"qq_secret"`
-			OneAPIURL      string    `json:"oneapi_url"`
-			OneAPIToken    string    `json:"oneapi_token"`
-			Model          string    `json:"model"`
-			BotName        string    `json:"bot_name"`
-			Passcode       string    `json:"passcode"`
-			WebPort        *int      `json:"web_port"`
-			EnableStickers *bool     `json:"enable_stickers"`
-			EnableExec     *bool     `json:"enable_exec"`
-			ExecWhitelist  *[]string `json:"exec_whitelist"`
-			TokenBudget    *int      `json:"token_budget"`
-			MaxHistoryMsgs *int      `json:"max_history_msgs"`
-			StreamReply    *bool     `json:"stream_reply"`
+			QQAppID        string               `json:"qq_appid"`
+			QQSecret       string               `json:"qq_secret"`
+			OneAPIURL      string               `json:"oneapi_url"`
+			OneAPIToken    string               `json:"oneapi_token"`
+			Model          string               `json:"model"`
+			BotName        string               `json:"bot_name"`
+			Passcode       string               `json:"passcode"`
+			WebPort        *int                 `json:"web_port"`
+			EnableStickers *bool                `json:"enable_stickers"`
+			EnableExec     *bool                `json:"enable_exec"`
+			ExecWhitelist  *[]string            `json:"exec_whitelist"`
+			TokenBudget    *int                 `json:"token_budget"`
+			MaxHistoryMsgs *int                 `json:"max_history_msgs"`
+			StreamReply    *bool                `json:"stream_reply"`
+			ModelRouting   *config.ModelRouting `json:"model_routing"`
 		}
 
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&updateReq); err != nil {
@@ -585,6 +588,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if updateReq.StreamReply != nil {
 				c.StreamReply = *updateReq.StreamReply
+			}
+			if updateReq.ModelRouting != nil {
+				c.Routing = *updateReq.ModelRouting
 			}
 		})
 

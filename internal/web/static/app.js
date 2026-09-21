@@ -476,6 +476,14 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('cfg-llm-token').placeholder =
         currentConfig.oneapi_token_masked ? '留空则不修改' : '请输入大模型 API Key';
       document.getElementById('cfg-llm-model').value = currentConfig.model || '';
+
+      const routing = currentConfig.model_routing || {};
+      document.getElementById('cfg-routing-chat').value = routing.chat || '';
+      document.getElementById('cfg-routing-complex').value = routing.complex || '';
+      document.getElementById('cfg-routing-vision').value = routing.vision || '';
+      document.getElementById('cfg-routing-code').value = routing.code || '';
+      document.getElementById('cfg-routing-extract').value = routing.extract || '';
+
       // 口令不回传任何形式的值（含掩码），只提示是否已设置
       const passEl = document.getElementById('cfg-passcode');
       passEl.value = '';
@@ -500,6 +508,13 @@ document.addEventListener('DOMContentLoaded', () => {
       oneapi_url: document.getElementById('cfg-llm-url').value.trim(),
       oneapi_token: document.getElementById('cfg-llm-token').value.trim(),
       model: document.getElementById('cfg-llm-model').value.trim(),
+      model_routing: {
+        chat: document.getElementById('cfg-routing-chat').value.trim(),
+        complex: document.getElementById('cfg-routing-complex').value.trim(),
+        vision: document.getElementById('cfg-routing-vision').value.trim(),
+        code: document.getElementById('cfg-routing-code').value.trim(),
+        extract: document.getElementById('cfg-routing-extract').value.trim()
+      },
       passcode: document.getElementById('cfg-passcode').value.trim(),
       web_port: parseInt(document.getElementById('cfg-web-port').value, 10) || 8088,
       enable_stickers: document.getElementById('cfg-enable-stickers').checked

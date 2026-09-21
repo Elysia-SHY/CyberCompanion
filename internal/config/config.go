@@ -420,6 +420,13 @@ func Get() *Config {
 	return &cp
 }
 
+// SetForTest 供单元测试注入配置快照。
+func SetForTest(cfg *Config) {
+	mu.Lock()
+	defer mu.Unlock()
+	instance = cfg
+}
+
 // Update modifies configuration safely and persists to disk atomically
 func Update(updater func(cfg *Config)) error {
 	mu.Lock()
