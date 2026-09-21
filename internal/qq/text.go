@@ -105,10 +105,10 @@ func appendNotice(parts *[]string, tail string, limit int) {
 // ─── 流式自然句子切分 ─────────────────────────────────────────────────────────
 
 const (
-	minSentenceRunes    = 15  // 常规流式切割时，完整句子的最小累积字符数，避免碎片刷屏
-	timeoutMinRunes     = 3   // 超时（流速慢/思考停顿）时，只要形成完整句子（>=3字）即放行
-	clauseFallbackRunes = 60  // 极端长句（无句末标点）达到此阈值时，退化寻找分号/逗号分段
-	hardCapRunes        = 150 // 无任何标点时的安全硬上限，避免无限积压
+	minSentenceRunes    = 60  // 常规流式切割时，完整句子的最小累积字符数（短句不分段，避免多次弹窗刷屏）
+	timeoutMinRunes     = 20  // 超时（流速慢/思考停顿）时的最小放行字符数
+	clauseFallbackRunes = 90  // 极端长句（无句末标点）达到此阈值时，退化寻找分号/逗号分段
+	hardCapRunes        = 160 // 无任何标点时的安全硬上限，避免无限积压
 )
 
 // isSentenceTerminator 判断单个 rune 是否为句子终结符。

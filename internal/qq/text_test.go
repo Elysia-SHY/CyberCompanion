@@ -205,26 +205,22 @@ func TestFindStreamSentenceCut(t *testing.T) {
 		t.Errorf("半截话不应切分: got %d, want 0", cut)
 	}
 
-	// 2. 形成完整句子且达到字数，应准确切在句末标点后
-	in2 := "今天天气真好，我想和你一起去公园散步，你觉得怎么样呢？我刚"
-	cut2 := FindStreamSentenceCut(in2, false, false)
-	wantSub2 := "今天天气真好，我想和你一起去公园散步，你觉得怎么样呢？"
-	if cut2 == 0 || in2[:cut2] != wantSub2 {
-		t.Errorf("应切在问号后: got cut=%d %q, want %q", cut2, in2[:cut2], wantSub2)
+	// 2. 短句未超时时不切分，避免多次弹窗刷屏
+	in2Short := "今天天气真好，我想和你一起去公园散步，你觉得怎么样呢？我刚"
+	if cut := FindStreamSentenceCut(in2Short, false, false); cut != 0 {
+		t.Errorf("短句未超时不应切分: got %d, want 0", cut)
 	}
 
-	// 3. 语气词与后置修饰符（如 ~♪）应被完整吸收
-	in3 := "主人好呀～♪ 今天想聊点什么呢？我一直都在等主人呢喵~"
-	cut3 := FindStreamSentenceCut(in3, false, false)
-	if cut3 != len(in3) {
-		t.Errorf("应吸收末尾喵~: got cut=%d %q, want %q", cut3, in3[:cut3], in3)
+	// 3. 形成长句达到 60 字，应准确切在最后一个句末标点后
+	in2Long := strings.Repeat("今天天气真好，我想和你一起去公园散步，你觉得怎么样呢？", 3) + "我刚"
+	cut2 := FindStreamSentenceCut(in2Long, false, false)
+	wantSub2 := strings.Repeat("今天天气真好，我想和你一起去公园散步，你觉得怎么样呢？", 3)
+	if cut2 == 0 || in2Long[:cut2] != wantSub2 {
+		t.Errorf("应切在问号后: got cut=%d %q, want %q", cut2, in2Long[:cut2], wantSub2)
 	}
 
-	// 4. 超时情况：短句达到 timeoutMinRunes 时应放行完整句子
-	in4 := "好呀喵～"
-	if cut := FindStreamSentenceCut(in4, false, false); cut != 0 {
-		t.Errorf("未超时短句不应放行: got %d", cut)
-	}
+	// 4. 超时情况：短句达到 timeoutMinRunes (20) 时放行完整句子
+	in4 := "主人好呀～♪ 今天想聊点什么呢？我一直都在等主人呢喵~"
 	if cut := FindStreamSentenceCut(in4, false, true); cut != len(in4) {
 		t.Errorf("超时短句应放行: got %d, want %d", cut, len(in4))
 	}
@@ -235,12 +231,12 @@ func TestFindStreamSentenceCut(t *testing.T) {
 		t.Errorf("force 应返回全部长度: got %d, want %d", cut, len(in5))
 	}
 
-	// 6. 引号闭合吸收测试
-	in6 := "雪球大声对主人说：“快来陪我玩吧！”然后扑了过来"
+	// 6. 引号闭合吸收测试（长句）
+	in6 := strings.Repeat("主人早安！", 10) + "雪球大声对主人说：“快来陪我玩吧！”然后扑了过来"
 	cut6 := FindStreamSentenceCut(in6, false, false)
-	wantSub6 := "雪球大声对主人说：“快来陪我玩吧！”"
-	if cut6 == 0 || in6[:cut6] != wantSub6 {
-		t.Errorf("应吸收闭合双引号: got %q, want %q", in6[:cut6], wantSub6)
+	wantPrefix6 := strings.Repeat("主人早安！", 10) + "雪球大声对主人说：“快来陪我玩吧！”"
+	if cut6 == 0 || in6[:cut6] != wantPrefix6 {
+		t.Errorf("应吸收闭合双引号: got %q, want %q", in6[:cut6], wantPrefix6)
 	}
 }
 

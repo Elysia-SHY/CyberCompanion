@@ -204,6 +204,7 @@ func buildRequest(ctx context.Context, endpoint, token, model string, messages [
 		Messages:    messages,
 		Temperature: 0.7,
 		Stream:      stream,
+		MaxTokens:   120,
 	}
 
 	data, err := json.Marshal(reqBody)

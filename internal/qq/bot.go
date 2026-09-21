@@ -295,6 +295,17 @@ func handleIncoming(senderOpenID, groupOpenID, text, msgID string, attachments [
 			out, _ := runPlugin("exec", map[string]string{"cmd": cmdStr}, ec)
 			replyContent = out
 
+		case strings.HasPrefix(cleanText, "搜索 ") || strings.HasPrefix(cleanText, "/search ") ||
+			strings.HasPrefix(cleanText, "搜一下 ") || strings.HasPrefix(cleanText, "查一下 "):
+			var q string
+			if idx := strings.Index(cleanText, " "); idx > 0 {
+				q = strings.TrimSpace(cleanText[idx+1:])
+			}
+			if q != "" {
+				out, _ := runPlugin("search", map[string]string{"query": q}, ec)
+				replyContent = out
+			}
+
 		default:
 			// 3. 正常对话：交给 agent 引擎编排（记忆 + 权限 + 能力 + 模型）
 			var extra []string
