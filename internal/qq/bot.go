@@ -478,23 +478,23 @@ func streamWithEngine(target replyTarget, req agent.Request) (string, error) {
 		filter   = stickers.NewMarkerFilter()
 	)
 
-	// flush 从 visible 里切一段发出去。force 用于收尾补发尾段。
+	// flush 从 visible 里按自然句子边界切分发出去。force 用于收尾补发尾段。
 	flush := func(force bool) {
-		pending := visible.Len() - sent
-		if pending <= 0 {
+		pending := visible.String()[sent:]
+		if len(pending) == 0 {
 			return
 		}
-		if !force {
-			enough := pending >= streamMaxFlushChars ||
-				(pending >= streamFlushMinChars && time.Since(lastSent) >= streamFlushInterval)
-			if !enough {
-				return
-			}
+		timeout := time.Since(lastSent) >= streamFlushInterval
+		cut := FindStreamSentenceCut(pending, force, timeout)
+		if cut <= 0 {
+			return
 		}
-		part := visible.String()[sent:]
-		sent = visible.Len()
+		part := strings.TrimRight(pending[:cut], " \t\r\n")
+		sent += cut
 		lastSent = time.Now()
-		SendTextSegmented(target.Sender, target.Group, part, target.MsgID)
+		if part != "" {
+			SendTextSegmented(target.Sender, target.Group, part, target.MsgID)
+		}
 	}
 
 	// 引擎的增量回调：先过表情标记过滤，再交给分段发送

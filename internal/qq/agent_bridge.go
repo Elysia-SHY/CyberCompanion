@@ -354,7 +354,7 @@ func buildHistory(sessionKey string, cfg *config.Config) []llm.Message {
 // buildPlainMessages 是降级路径的消息组装（不含记忆与能力）。
 func buildPlainMessages(sessionKey, activePrompt, userText string, imageURLs []string) []llm.Message {
 	cfg := config.Get()
-	msgs := []llm.Message{{Role: "system", Content: activePrompt}}
+	msgs := []llm.Message{{Role: "system", Content: activePrompt + agent.IdentityGuardrail}}
 	msgs = append(msgs, buildHistory(sessionKey, cfg)...)
 	msgs = append(msgs, agent.BuildUserMessage(userText, imageURLs))
 	return msgs

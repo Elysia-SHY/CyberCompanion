@@ -56,7 +56,7 @@ func SplitMessage(text string, limit int) []string {
 
 		// 只在「后半段」找边界，避免切出过短的碎片
 		minIdx := limit / 3
-		for _, sep := range []string{"\n\n", "\n", "。", "！", "？", "；", ". ", "! ", "? ", "，", ", ", " "} {
+		for _, sep := range []string{"\n\n", "\n", "。", "！", "？", "；", "~", "～", "……", "...", ". ", "! ", "? ", "，", ", ", " "} {
 			if idx := strings.LastIndex(window, sep); idx > minIdx {
 				cut = utf8.RuneCountInString(window[:idx+len(sep)])
 				break
@@ -100,6 +100,118 @@ func appendNotice(parts *[]string, tail string, limit int) {
 	}
 	// 否则单独占一段，但总段数仍在 maxSegments 之内
 	*parts = append(*parts, tail+notice)
+}
+
+// ─── 流式自然句子切分 ─────────────────────────────────────────────────────────
+
+const (
+	minSentenceRunes    = 15  // 常规流式切割时，完整句子的最小累积字符数，避免碎片刷屏
+	timeoutMinRunes     = 3   // 超时（流速慢/思考停顿）时，只要形成完整句子（>=3字）即放行
+	clauseFallbackRunes = 60  // 极端长句（无句末标点）达到此阈值时，退化寻找分号/逗号分段
+	hardCapRunes        = 150 // 无任何标点时的安全硬上限，避免无限积压
+)
+
+// isSentenceTerminator 判断单个 rune 是否为句子终结符。
+func isSentenceTerminator(r rune) bool {
+	switch r {
+	case '。', '！', '？', '!', '?', '\n', '~', '～', '…':
+		return true
+	}
+	return false
+}
+
+// isClosingModifier 判断是否为紧随句末标点的闭合符号或修饰符。
+func isClosingModifier(r rune) bool {
+	switch r {
+	case '”', '"', '’', '\'', '）', ')', '》', '>', '」', '』', '♪', '~', '～', ' ', '\t':
+		return true
+	}
+	return false
+}
+
+// isClauseSeparator 判断是否为退化使用的分句标点。
+func isClauseSeparator(r rune) bool {
+	switch r {
+	case '；', ';', '，', ',', '、':
+		return true
+	}
+	return false
+}
+
+// FindStreamSentenceCut 在 pending 流式文本中寻找安全的句子切割点（返回 pending 的字节偏移量）。
+//
+// 核心原则：
+// 1. force == true 时（生成结束），返回 len(pending) 发出所有剩余内容。
+// 2. 正常流式生成中，优先在句子终结符处切割，吸收紧随的引号/修饰符号。
+// 3. 绝不在未完成的句子中间进行截断；若未形成完整句子且未达到超长上限，返回 0 保持等待。
+func FindStreamSentenceCut(pending string, force bool, timeout bool) int {
+	if len(pending) == 0 {
+		return 0
+	}
+	if force {
+		return len(pending)
+	}
+
+	runes := []rune(pending)
+	totalRunes := len(runes)
+
+	// 寻找当前文本中最后一个完整的句子结束符边界
+	lastSentenceBoundary := 0
+	for i := 0; i < totalRunes; i++ {
+		isTerm := isSentenceTerminator(runes[i])
+		if !isTerm && runes[i] == '.' {
+			// 英文句号：避免匹配 3.14，要求后接空格/换行/闭合符或位于末尾
+			if i+1 == totalRunes || runes[i+1] == ' ' || runes[i+1] == '\n' || runes[i+1] == '\t' || isClosingModifier(runes[i+1]) {
+				isTerm = true
+			}
+		}
+
+		if isTerm {
+			end := i + 1
+			for end < totalRunes && isClosingModifier(runes[end]) {
+				end++
+			}
+			lastSentenceBoundary = end
+		}
+	}
+
+	// 1. 如果找到了完整的句子边界
+	if lastSentenceBoundary > 0 {
+		if lastSentenceBoundary >= minSentenceRunes || (timeout && lastSentenceBoundary >= timeoutMinRunes) {
+			return len(string(runes[:lastSentenceBoundary]))
+		}
+	}
+
+	// 2. 超长长句退化策略：无句末标点但已达到 clauseFallbackRunes
+	if totalRunes >= clauseFallbackRunes {
+		lastClauseBoundary := 0
+		for j := 0; j < totalRunes; j++ {
+			if isClauseSeparator(runes[j]) {
+				end := j + 1
+				for end < totalRunes && isClosingModifier(runes[end]) {
+					end++
+				}
+				lastClauseBoundary = end
+			}
+		}
+		if lastClauseBoundary >= minSentenceRunes {
+			return len(string(runes[:lastClauseBoundary]))
+		}
+	}
+
+	// 3. 极端安全硬上限：无任何标点且超出 hardCapRunes
+	if totalRunes >= hardCapRunes {
+		// 优先找空格
+		for k := hardCapRunes; k >= minSentenceRunes; k-- {
+			if runes[k] == ' ' || runes[k] == '\t' {
+				return len(string(runes[:k+1]))
+			}
+		}
+		return len(string(runes[:hardCapRunes]))
+	}
+
+	// 仍是半句话，继续等待后续 token
+	return 0
 }
 
 // ─── 会话 token 预算 ──────────────────────────────────────────────────────────

@@ -197,3 +197,50 @@ func TestAuthAttemptLimit(t *testing.T) {
 		t.Error("清除记录后应恢复放行")
 	}
 }
+
+func TestFindStreamSentenceCut(t *testing.T) {
+	// 1. 未形成完整句子且未达超长阈值时，不应切分（返回 0）
+	in := "今天天气真好，我想和你一起去公"
+	if cut := FindStreamSentenceCut(in, false, false); cut != 0 {
+		t.Errorf("半截话不应切分: got %d, want 0", cut)
+	}
+
+	// 2. 形成完整句子且达到字数，应准确切在句末标点后
+	in2 := "今天天气真好，我想和你一起去公园散步，你觉得怎么样呢？我刚"
+	cut2 := FindStreamSentenceCut(in2, false, false)
+	wantSub2 := "今天天气真好，我想和你一起去公园散步，你觉得怎么样呢？"
+	if cut2 == 0 || in2[:cut2] != wantSub2 {
+		t.Errorf("应切在问号后: got cut=%d %q, want %q", cut2, in2[:cut2], wantSub2)
+	}
+
+	// 3. 语气词与后置修饰符（如 ~♪）应被完整吸收
+	in3 := "主人好呀～♪ 今天想聊点什么呢？我一直都在等主人呢喵~"
+	cut3 := FindStreamSentenceCut(in3, false, false)
+	if cut3 != len(in3) {
+		t.Errorf("应吸收末尾喵~: got cut=%d %q, want %q", cut3, in3[:cut3], in3)
+	}
+
+	// 4. 超时情况：短句达到 timeoutMinRunes 时应放行完整句子
+	in4 := "好呀喵～"
+	if cut := FindStreamSentenceCut(in4, false, false); cut != 0 {
+		t.Errorf("未超时短句不应放行: got %d", cut)
+	}
+	if cut := FindStreamSentenceCut(in4, false, true); cut != len(in4) {
+		t.Errorf("超时短句应放行: got %d, want %d", cut, len(in4))
+	}
+
+	// 5. force == true 时，应无条件发出所有剩余内容
+	in5 := "最后半截未完成的内容"
+	if cut := FindStreamSentenceCut(in5, true, false); cut != len(in5) {
+		t.Errorf("force 应返回全部长度: got %d, want %d", cut, len(in5))
+	}
+
+	// 6. 引号闭合吸收测试
+	in6 := "雪球大声对主人说：“快来陪我玩吧！”然后扑了过来"
+	cut6 := FindStreamSentenceCut(in6, false, false)
+	wantSub6 := "雪球大声对主人说：“快来陪我玩吧！”"
+	if cut6 == 0 || in6[:cut6] != wantSub6 {
+		t.Errorf("应吸收闭合双引号: got %q, want %q", in6[:cut6], wantSub6)
+	}
+}
+
