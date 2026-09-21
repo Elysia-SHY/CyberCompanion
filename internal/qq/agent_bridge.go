@@ -224,6 +224,18 @@ var quickCommands = []quickCommand{
 		args:    map[string]string{"sides": "6"},
 		minRole: store.RoleGuest,
 	},
+	{
+		matches: []string{"提醒列表", "/remind list", "我的提醒", "查看提醒"},
+		plugin:  "remind",
+		args:    map[string]string{"action": "list"},
+		minRole: store.RoleGuest,
+	},
+	{
+		matches: []string{"取消提醒", "/remind cancel", "清空提醒", "清除提醒"},
+		plugin:  "remind",
+		args:    map[string]string{"action": "cancel"},
+		minRole: store.RoleGuest,
+	},
 }
 
 // matchQuickCommand 判断输入是否命中快捷命令。

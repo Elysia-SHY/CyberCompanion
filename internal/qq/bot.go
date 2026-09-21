@@ -305,6 +305,17 @@ func handleIncoming(senderOpenID, groupOpenID, text, msgID string, attachments [
 				replyContent = out
 			}
 
+		case strings.HasPrefix(cleanText, "/remind "):
+			rest := strings.TrimSpace(cleanText[len("/remind "):])
+			parts := strings.Fields(rest)
+			if len(parts) >= 2 {
+				out, _ := runPlugin("remind", map[string]string{"time": parts[0], "content": strings.Join(parts[1:], " ")}, ec)
+				replyContent = out
+			} else if len(parts) == 1 {
+				out, _ := runPlugin("remind", map[string]string{"time": parts[0]}, ec)
+				replyContent = out
+			}
+
 		case strings.HasPrefix(cleanText, "搜索 ") || strings.HasPrefix(cleanText, "搜一下 ") ||
 			strings.HasPrefix(cleanText, "查一下 "):
 			var q string

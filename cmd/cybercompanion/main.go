@@ -208,6 +208,7 @@ func main() {
 	plugins.Register(plugin.NewRecallPlugin(memMgr))
 	plugins.Register(plugin.NewForgetPlugin(memMgr))
 	plugins.Register(plugin.NewSearchPlugin())
+	plugins.Register(plugin.NewRemindPlugin(db))
 	qq.AddLog("[Plugin] 已注册能力: %v", plugins.SortedNames())
 
 	// 3.5 外部 MCP 能力（优化建议书第七节）

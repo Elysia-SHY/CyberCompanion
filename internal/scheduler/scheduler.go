@@ -157,13 +157,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 	for _, task := range due {
 		next := NextRun(task.Cron, time.Now())
 
-		// 免打扰时段内不发送，但也不丢弃：把这次执行推迟到时段结束。
-		if hasQuiet && inQuietHours(time.Now(), start, end) {
+		// 免打扰时段：只对系统周期性广播任务（Cron 非空）生效。
+		// 用户显式设定的单次倒计时/定时提醒（Cron 为空，如“20分钟后叫我睡觉”）是用户明确吩咐的，准时触发。
+		if task.Cron != "" && hasQuiet && inQuietHours(time.Now(), start, end) {
 			resume := quietEnd(time.Now(), start, end)
 			if err := s.db.MarkScheduleRun(task.ID, resume); err != nil {
 				continue
 			}
-			// 一次性任务在免打扰期间到期：给它一个明确的执行时间而不是直接吃掉
 			continue
 		}
 

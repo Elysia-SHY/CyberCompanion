@@ -726,9 +726,9 @@ func (g GroupSettings) MaxRepliesPerMinuteOr() int {
 	return g.MaxRepliesPerMinute
 }
 
-// 调度器默认：开启，5 分钟轮询一次，22:00–08:00 免打扰。
+// 调度器默认：开启，15 秒轮询一次，保障倒计时与定时提醒的高精度响应。
 const (
-	defaultScheduleInterval = 300
+	defaultScheduleInterval = 15
 )
 
 // ScheduleEnabled 报告调度器是否启用（默认启用）。
