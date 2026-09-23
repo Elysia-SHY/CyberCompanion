@@ -184,7 +184,7 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 		// 如果模型调用了联网搜索或天气查询，触发第二轮总结合成：让模型以当前人设提炼总结，严禁直接复制粘贴
 		if len(searchOutputs) > 0 {
 			searchContext := strings.Join(searchOutputs, "\n\n")
-			synthPrompt := fmt.Sprintf("【联网检索/实时信息如下】：\n%s\n\n【回答要求】：请根据以上信息，以你的角色人设口吻用 1~2 句话（30字左右）自然生动地回答用户。绝对禁止直接复制粘贴原始搜索文本或URL链接，禁止机械念稿，保持人设！", searchContext)
+			synthPrompt := fmt.Sprintf("【联网检索/实时信息如下】：\n%s\n\n【回答要求】：请根据以上信息，以你的角色人设口吻用 2~3 句话（30~60字左右）自然生动地回答用户，给出明确的天气/实用信息并带上贴心提醒。遇到具体任务必须完整给出答案，绝对禁止直接复制粘贴原始搜索文本或URL链接，禁止机械念稿，保持人设！", searchContext)
 
 			synthMessages := make([]llm.Message, len(messages), len(messages)+2)
 			copy(synthMessages, messages)
@@ -213,6 +213,10 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 					clean2, _ := ExtractCalls(raw2)
 					resp.Text = clean2
 				}
+				// 兜底：如果模型总结为空或失败，直接使用搜索/天气结果，绝不丢失信息
+				if resp.Text == "" {
+					resp.Text = fmt.Sprintf("喵~ 为主人查到啦：%s 喵~", strings.Join(searchOutputs, "；"))
+				}
 			}
 		}
 	}
@@ -220,6 +224,9 @@ func (e *Engine) Run(ctx context.Context, req Request) (Response, error) {
 	// 流式路径下正文已发出，Text 留空避免重复发送
 	if resp.Streamed {
 		resp.Text = ""
+	} else if resp.Text == "" && len(resp.Extra) == 0 {
+		// 模型返回了空内容且没有流式输出和额外数据，提供贴合人设的兜底，绝不装聋作哑
+		resp.Text = "喵呜~ 雪球刚才有点走神了，主人能再说一遍吗喵~"
 	}
 	return resp, nil
 }

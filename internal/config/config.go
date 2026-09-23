@@ -30,6 +30,7 @@ type Config struct {
 	EnableStickers bool     `json:"enable_stickers"`
 	MaxHistoryMsgs int      `json:"max_history_msgs"`
 	TokenBudget    int      `json:"token_budget"`
+	MaxTokens      int      `json:"max_tokens,omitempty"`
 	ExecWhitelist  []string `json:"exec_whitelist,omitempty"`
 	EnableExec     bool     `json:"enable_exec"`
 	// StreamReply 开启私聊流式输出：边生成边发，避免长回复长时间无反馈。

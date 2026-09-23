@@ -326,7 +326,7 @@ func handleIncoming(senderOpenID, groupOpenID, text, msgID string, attachments [
 				// 立即执行搜索插件获取最新信息，并让引擎结合当前角色人设进行简明总结，绝不直接甩大段原文
 				out, ok := runPlugin("search", map[string]string{"query": q}, ec)
 				if ok && out != "" {
-					promptWithSearch := fmt.Sprintf("请以你的角色人设口吻，根据以下联网搜索结果用 1~2 句话（30字左右）自然回答关于「%s」的内容。绝对禁止直接复制粘贴搜索结果、网页摘要或URL链接，保持角色语气灵动简练：\n\n%s", q, out)
+					promptWithSearch := fmt.Sprintf("请以你的角色人设口吻，根据以下联网搜索结果用 2~3 句话（30~60字左右）自然回答关于「%s」的内容，给出明确核心信息。绝对禁止直接复制粘贴搜索结果、网页摘要或URL链接，保持角色语气灵动简练：\n\n%s", q, out)
 					replyContent, _ = chatWithEngine(target, sessionKey, scope, ownerID, senderOpenID, role, promptWithSearch, imageURLs)
 				} else {
 					cleanText = "帮我查一下 " + q

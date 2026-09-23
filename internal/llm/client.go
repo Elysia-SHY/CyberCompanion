@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"cybercompanion/internal/config"
 )
 
 type MessageContentPart struct {
@@ -199,12 +201,17 @@ func buildRequest(ctx context.Context, endpoint, token, model string, messages [
 		model = "deepseek-chat"
 	}
 
+	maxTokens := 2048
+	if cfg := config.Get(); cfg != nil && cfg.MaxTokens > 0 {
+		maxTokens = cfg.MaxTokens
+	}
+
 	reqBody := ChatRequest{
 		Model:       model,
 		Messages:    messages,
 		Temperature: 0.7,
 		Stream:      stream,
-		MaxTokens:   120,
+		MaxTokens:   maxTokens,
 	}
 
 	data, err := json.Marshal(reqBody)
